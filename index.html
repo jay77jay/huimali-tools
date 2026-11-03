@@ -89,6 +89,7 @@
   .zone{display:inline-block;background:rgba(0,0,0,.25);border-radius:8px;padding:2px 12px;font-size:22px;font-weight:800;margin-bottom:2px}
   .zh{font-size:18px;font-weight:800;margin:14px 2px 6px;display:flex;align-items:center;gap:8px}
   .zh i{display:inline-block;width:14px;height:14px;border-radius:4px}
+  #sgSum div{background:#f3f4f6;border-radius:10px;padding:8px 2px;font-size:13px} #sgSum b{display:block;font-size:22px}
   #flash{position:fixed;inset:0;z-index:90;pointer-events:none;opacity:0;transition:opacity .25s}
   #inapp{display:none;background:#b91c1c;color:#fff;padding:12px;font-size:15px;line-height:1.5}
 </style>
@@ -179,6 +180,16 @@
     <div class="card"><h3 style="margin:0 0 6px">例外紀錄</h3><div id="exList" class="list"></div></div>
     <div class="card"><h3 style="margin:0 0 6px">尚未到貨（依入庫單）</h3><div id="missList"></div></div>
     <div class="card">
+      <h3 style="margin:0 0 6px">SG 上傳檔</h3>
+      <div id="sgSum" class="sum" style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;text-align:center"></div>
+      <button class="btn big" id="sgInBtn" style="margin-top:10px">下載 SG 入庫檔</button>
+      <p class="muted" id="sgInfo" style="margin:6px 0 0"></p>
+      <div id="sgHist" class="list" style="margin-top:6px"></div>
+      <hr style="border:0;border-top:1px solid var(--line);margin:12px 0">
+      <button class="btn big gray" id="sgNewBtn">下載 SG 創建新品檔</button>
+      <p class="muted" id="sgNewInfo" style="margin:6px 0 0"></p>
+    </div>
+    <div class="card">
       <h3 style="margin:0 0 6px">回報文字</h3>
       <pre class="rep" id="repText"></pre>
       <button class="btn" id="copyRep">複製回報文字</button>
@@ -186,9 +197,6 @@
     <div class="card">
       <button class="btn gray" onclick="$('#addFile').click()">＋ 加入入庫單到這批</button>
       <input type="file" id="addFile" accept=".xlsx,.xls" multiple style="display:none">
-      <button class="btn big" id="sgInBtn" style="margin-top:8px">下載 SG 入庫檔</button>
-      <button class="btn big" id="sgNewBtn" style="margin-top:8px">下載 SG 創建新品檔</button>
-      <p class="muted" id="sgInfo" style="margin:6px 0 0"></p>
       <button class="btn gray" id="exportBtn" style="margin-top:8px">匯出配籃結果 (.xlsx)</button>
       <button class="btn bad" id="closeBtn" style="float:right;margin-top:8px">結案</button>
       <div style="clear:both"></div>
@@ -237,7 +245,7 @@ if(IN_APP) document.getElementById('inapp').style.display='block';
 db.enablePersistence({synchronizeTabs:true}).catch(()=>{});
 const FV=firebase.firestore.FieldValue, FP=firebase.firestore.FieldPath;
 // 資料位置（都以 huimali_ 開頭）
-const C={batches:'huimali_batches',lines:'huimali_lines',state:'huimali_state',ex:'huimali_ex',meta:'huimali_meta',items:'huimali_items'};
+const C={sgx:'huimali_sgx',batches:'huimali_batches',lines:'huimali_lines',state:'huimali_state',ex:'huimali_ex',meta:'huimali_meta',items:'huimali_items'};
 
 /* ================= 狀態 ================= */
 const ZONE=['#6b7280','#2563eb','#dc2626','#16a34a','#9333ea','#ea580c','#0891b2','#be185d','#65a30d','#92400e'];
@@ -367,7 +375,8 @@ async function openBatch(id){
   myLog=[];curBox='ALL';curJp='ALL';curSize='ALL';curColor='ALL';query='';
   $('#tabs').style.display='flex';$('#backBtn').style.display='inline-block';
   // 即時同步：配籃進度、例外、學習
-  unsub.push(db.collection(C.state).doc(id).onSnapshot(d=>{if(!S||S.id!==id)return;S.rcv=(d.data()||{}).rcv||{};render(false)}));
+  unsub.push(db.collection(C.state).doc(id).onSnapshot(d=>{if(!S||S.id!==id)return;const x=d.data()||{};S.rcv=x.rcv||{};S.sgIn=x.sgIn||{};render(false)}));
+  unsub.push(db.collection(C.sgx).where('bid','==',id).onSnapshot(q=>{if(!S||S.id!==id)return;S.sgx=q.docs.map(d=>({_id:d.id,...d.data()})).sort((a,b)=>a.at-b.at);renderSG()}));
   unsub.push(db.collection(C.ex).where('bid','==',id).onSnapshot(q=>{if(!S||S.id!==id)return;S.ex=q.docs.map(d=>({_id:d.id,...d.data()})).sort((a,b)=>a.t-b.t);renderReport()}));
   unsub.push(db.collection(C.batches).doc(id).onSnapshot(d=>{if(d.exists&&S&&S.id===id){S.name=d.data().name;S.files=d.data().files;S.closed=d.data().closed;render(false)}}));
   render();show('match');
@@ -615,8 +624,7 @@ function renderReport(){
   if(S.ex.length){lines.push('','■ 例外（照片另附）：');S.ex.forEach((e,i)=>lines.push(`${i+1}. ${e.type}｜${e.box}｜${e.note}`))}
   if(!miss.length&&!S.ex.length) lines.push('全部到齊，無例外。');
   $('#repText').textContent=lines.join('\n');
-  const nk=sgSkus().size;
-  $('#sgInfo').textContent=`跟 BAS 一樣依入庫單的數量（${nk} 個 SKU，共 ${t} 件）。`+(miss.length?`⚠️ 還有 ${miss.reduce((a,l)=>a+rem(l),0)} 件沒到貨，也會包含在內。`:'');
+  renderSG();
 }
 async function delEx(i){if(await ask('刪除這筆例外？','刪除')){db.collection(C.ex).doc(S.ex[i]._id).delete().catch(e=>toast(e.message))}}
 
@@ -705,26 +713,82 @@ $('#exportBtn').onclick=()=>{
   XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(ex.length?ex:[{類型:'無'}]),'例外');
   try{XLSX.writeFile(wb,'繪馬梨-'+S.files.join('_').replace(/\//g,'_')+'-配籃結果.xlsx')}catch(e){toast('這個環境不能下載，請用「複製回報文字」',3500)}
 };
-/* ================= SG 上傳檔（格式跟 BAS 一樣） ================= */
+/* ================= SG 上傳檔 =================
+   新品：整批所有入庫單合併，同 SKU 只留一列（含未到貨，舊商品 SG 會自動擋掉）
+   入庫：只算「已到貨、還沒下載過」的件，同 SKU 加總；SG 只收一個工作表，來源明細另存一檔
+   每次下載都記錄（huimali_sgx），下次不再重複；上傳失敗可以作廢重來 */
 const cleanSG=s=>String(s??'').replace(/[\r\n]/g,'').trim();
-const sgName=kind=>{const d=new Date();return `繪馬梨${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}入-${S.files.join('_').replace(/\//g,'_')}-${kind}.xlsx`};
-function sgSkus(){   // 依入庫單的數量，同 SKU 加總（跟 BAS 一樣）
-  const m=new Map();
-  [...S.lines].sort((a,b)=>a.sku<b.sku?-1:a.sku>b.sku?1:0).forEach(l=>{const k=cleanSG(l.sku);if(k)m.set(k,(m.get(k)||0)+l.qty)});
-  return m;
+const ymd=()=>{const d=new Date();return String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0')};
+const fileTag=()=>S.files.join('_').replace(/\//g,'_');
+const sortSku=(a,b)=>a.sku<b.sku?-1:a.sku>b.sku?1:0;
+const sgDone=l=>(S.sgIn||{})[l.id]||0;
+const sgReady=l=>Math.max(0,Math.min(l.qty,S.rcv[l.id]||0)-sgDone(l));   // 已到、還沒下載過
+function onlySheet(aoa){const ws=XLSX.utils.aoa_to_sheet(aoa);for(let i=2;i<=aoa.length;i++){if(ws['A'+i]){ws['A'+i].t='s';ws['A'+i].z='@'}}
+  const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'工作表1');return wb}
+function renderSG(){
+  if(!S) return;
+  let ready=0,done=0,wait=0;S.lines.forEach(l=>{ready+=sgReady(l);done+=Math.min(sgDone(l),l.qty);wait+=Math.max(0,rem(l))});
+  $('#sgSum').innerHTML=`<div><b>${ready}</b>可上傳</div><div><b>${done}</b>已上傳過</div><div><b style="color:${wait?'var(--bad)':'inherit'}">${wait}</b>未到貨</div>`;
+  const skus=new Set(S.lines.filter(l=>sgReady(l)>0).map(l=>cleanSG(l.sku)));
+  $('#sgInBtn').disabled=!ready;$('#sgInBtn').style.opacity=ready?1:.4;
+  $('#sgInBtn').textContent=ready?`下載 SG 入庫檔（${skus.size} 個 SKU，${ready} 件）`:'沒有新到貨要上傳';
+  $('#sgInfo').textContent=`包含 ${S.files.join('、')} 已配籃的件。下載後會自動記錄，下次只會有新到的件。`+(wait?`未到貨的 ${wait} 件不包含，到貨配籃後再下載。`:'');
+  const xs=(S.sgx||[]);
+  $('#sgHist').innerHTML=xs.length?xs.map((x,i)=>`<div class="it" style="${x.void?'opacity:.45':''}"><div class="tx"><b>第 ${i+1} 次</b>　${new Date(x.at).toLocaleString('zh-TW',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})}　${x.qty} 件 ${x.void?'（已作廢）':''}<br><span class="muted">${esc(x.by||'')}</span></div>
+    ${x.void?'':`<button class="btn gray" style="padding:6px 8px;font-size:13px" onclick="sgRedo('${x._id}')">重新下載</button><button class="btn gray" style="padding:6px 8px;font-size:13px" onclick="sgVoid('${x._id}')">作廢</button>`}</div>`).join(''):'';
+  const nk=new Set(S.lines.map(l=>cleanSG(l.sku)).filter(Boolean)).size, dupN=S.lines.length-nk;
+  $('#sgNewInfo').textContent=`${S.files.length} 張入庫單合併成一個檔，${nk} 個 SKU${dupN>0?`（重複的 ${dupN} 列已合併成一列）`:''}，含未到貨的商品。`;
 }
-$('#sgInBtn').onclick=()=>{
-  const aoa=[['庫存SKU','貨架','數量變更','批次']];sgSkus().forEach((q,k)=>aoa.push([k,null,q,null]));
-  const ws=XLSX.utils.aoa_to_sheet(aoa);for(let i=2;i<=aoa.length;i++){ws['A'+i].t='s';ws['A'+i].z='@'}
-  const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'工作表1');
-  try{XLSX.writeFile(wb,sgName('SG入庫'))}catch(e){toast('下載失敗：'+e.message)}
+function sgInAoa(items){   // items:[{sku,qty}] → SG 入庫格式，同 SKU 加總
+  const m=new Map();[...items].sort(sortSku).forEach(it=>{const k=cleanSG(it.sku);if(k)m.set(k,(m.get(k)||0)+it.qty)});
+  const aoa=[['庫存SKU','貨架','數量變更','批次']];m.forEach((q,k)=>aoa.push([k,null,q,null]));return aoa;
+}
+function srcWorkbook(x){   // 來源明細（另一個檔，不要上傳 SG）
+  const g=new Map();x.items.forEach(it=>{const k=cleanSG(it.sku);const r=g.get(k)||{sku:k,qty:0,src:new Set(),who:[]};r.qty+=it.qty;r.src.add(it.box);r.who.push(`${it.uid} ${it.name}`);g.set(k,r)});
+  const a1=[['庫存SKU','數量','來源入庫單','日本單號','ID / 名稱']];
+  [...g.values()].sort(sortSku).forEach(r=>{const its=x.items.filter(i=>cleanSG(i.sku)===r.sku);a1.push([r.sku,r.qty,[...r.src].join('、'),[...new Set(its.map(i=>i.jp))].join('、'),r.who.join('、')])});
+  const a2=[['入庫單','日本單號','狀態','ID','名稱','庫存SKU','未到數量']];
+  S.lines.filter(l=>rem(l)>0).sort(sortSku).forEach(l=>a2.push([l.box,l.jp,l.st,l.uid,l.name,cleanSG(l.sku),rem(l)]));
+  const a0=[['項目','內容'],['批次',S.name],['包含的入庫單',S.files.join('、')],['這次上傳',`${g.size} 個 SKU，${x.qty} 件`],['未到貨（不含在 SG 檔）',`${a2.length-1} 行`],['下載時間',new Date(x.at).toLocaleString('zh-TW')],['下載者',x.by||'']];
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(a0),'說明');
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(a1),'來源明細');
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(a2.length>1?a2:[...a2,['（全部到齊）']]),'未到貨');
+  return wb;
+}
+function sgDownload(x,seq){
+  const base=`繪馬梨${ymd()}入-${fileTag()}-第${seq}次`;
+  try{XLSX.writeFile(onlySheet(sgInAoa(x.items)),base+'-SG入庫.xlsx')}catch(e){return toast('下載失敗：'+e.message)}
+  // 第二個檔稍等一下再下載（有些手機一次只允許一個下載）
+  setTimeout(()=>{try{XLSX.writeFile(srcWorkbook(x),base+'-來源明細（不用上傳）.xlsx')}catch(e){}},1200);
+}
+$('#sgInBtn').onclick=async()=>{
+  const items=S.lines.filter(l=>sgReady(l)>0).map(l=>({id:l.id,sku:l.sku,qty:sgReady(l),box:l.box,jp:l.jp,uid:l.uid,name:l.name}));
+  if(!items.length) return toast('沒有新到貨要上傳');
+  const wait=S.lines.reduce((a,l)=>a+Math.max(0,rem(l)),0);
+  if(!(await ask(`下載 SG 入庫檔：${items.reduce((a,i)=>a+i.qty,0)} 件${wait?`\n（還有 ${wait} 件未到貨，不包含）`:''}\n\n下載後會記錄為「已上傳」，下次不會再出現。\n如果上傳 SG 失敗，可以按「作廢」重來。`,'下載'))) return;
+  const x={bid:S.id,at:Date.now(),by:me(),files:S.files,items,qty:items.reduce((a,i)=>a+i.qty,0),void:false};
+  const ref=db.collection(C.sgx).doc(), b=db.batch(), st=db.collection(C.state).doc(S.id);
+  b.set(ref,x);items.forEach(it=>b.update(st,new FP('sgIn',it.id),FV.increment(it.qty)));
+  items.forEach(it=>{S.sgIn=S.sgIn||{};S.sgIn[it.id]=(S.sgIn[it.id]||0)+it.qty});
+  b.commit().catch(e=>toast('記錄失敗：'+e.message,4000));
+  sgDownload(x,(S.sgx||[]).length+1);renderSG();
 };
+function sgRedo(xid){const i=S.sgx.findIndex(x=>x._id===xid);sgDownload(S.sgx[i],i+1)}
+async function sgVoid(xid){
+  const x=S.sgx.find(y=>y._id===xid);
+  if(!(await ask(`作廢這次的 SG 入庫（${x.qty} 件）？\n只有在「沒有成功上傳到 SG」時才作廢，作廢後這些件會回到「可上傳」。`,'作廢'))) return;
+  const b=db.batch(), st=db.collection(C.state).doc(S.id);
+  b.update(db.collection(C.sgx).doc(xid),{void:true,voidBy:me(),voidAt:Date.now()});
+  x.items.forEach(it=>b.update(st,new FP('sgIn',it.id),FV.increment(-it.qty)));
+  await b.commit().catch(e=>toast(e.message));
+}
 $('#sgNewBtn').onclick=()=>{
   const H=['庫存SKU','庫存貨品名稱','手上庫存','備註','貨架','客戶','倉庫','價格','貨品狀態','重量單位','庫存狀況','主庫存SKU','成本','品牌','類別','國際條碼（UPC）','重量','長度','寬度','高度','體積重量','安全庫存','補貨天數'];
-  const aoa=[H];[...sgSkus().keys()].forEach(k=>{const r=new Array(23).fill(null);r[0]=k;r[1]=k;r[2]=0;r[5]='汐止-繪馬梨';r[6]='汐止倉';r[7]=0;r[8]='活躍';r[9]='公斤';r[10]='有貨';aoa.push(r)});
-  const ws=XLSX.utils.aoa_to_sheet(aoa);for(let i=2;i<=aoa.length;i++){ws['A'+i].t='s';ws['A'+i].z='@'}
-  const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'工作表1');
-  try{XLSX.writeFile(wb,sgName('SG創建新品'))}catch(e){toast('下載失敗：'+e.message)}
+  const seen=new Set(),aoa=[H];
+  [...S.lines].sort(sortSku).forEach(l=>{const k=cleanSG(l.sku);if(!k||seen.has(k))return;seen.add(k);
+    const r=new Array(23).fill(null);r[0]=k;r[1]=k;r[2]=0;r[5]='汐止-繪馬梨';r[6]='汐止倉';r[7]=0;r[8]='活躍';r[9]='公斤';r[10]='有貨';aoa.push(r)});
+  try{XLSX.writeFile(onlySheet(aoa),`繪馬梨${ymd()}入-${fileTag()}-SG創建新品.xlsx`)}catch(e){toast('下載失敗：'+e.message)}
 };
 $('#closeBtn').onclick=async()=>{
   const on=!S.closed;
