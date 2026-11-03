@@ -104,7 +104,7 @@
     <div style="text-align:center;margin:10px 0">
       <button class="btn gray" id="showClosed">顯示已結案</button>
     </div>
-    <div class="muted" style="text-align:center" id="whoami"></div>
+    <div class="muted" style="text-align:center"><a href="./out.html">→ 出庫</a>　<span id="whoami"></span></div>
   </section>
 
   <!-- 配籃 -->
@@ -287,7 +287,7 @@ async function addFilesToBatch(files){
     const have=new Set(cur.map(l=>l.id)), files=[...bd.files];
     for(const p of parsed){if(!files.includes(p.grp))files.push(p.grp);for(const l of p.lines){if(have.has(l.id)){dup++;continue}have.add(l.id);cur.push(l);added++}}
     tx.set(lr,{lines:cur});
-    tx.update(br,{files,lineCount:cur.length,qty:cur.reduce((a,l)=>a+l.qty,0),name:bd.name.replace(/ .*$/,' ')+files.join('、')});
+    tx.update(br,{indexed:false,files,lineCount:cur.length,qty:cur.reduce((a,l)=>a+l.qty,0),name:bd.name.replace(/ .*$/,' ')+files.join('、')});
   });
   toast(`加入 ${added} 行${dup?`，略過重複 ${dup} 行`:''}`,3500);
   await openBatch(S.id);

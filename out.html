@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>繪馬梨 出庫</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+<style>
+  :root{--bg:#f4f5f7;--card:#fff;--ink:#1d2330;--mute:#6b7280;--line:#e3e6eb;--pri:#2563eb;--ok:#16a34a;--warn:#d97706;--bad:#dc2626}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  body{margin:0;font-family:system-ui,-apple-system,"Noto Sans TC","Microsoft JhengHei",sans-serif;background:var(--bg);color:var(--ink);font-size:16px}
+  header{position:sticky;top:0;z-index:20;background:#111827;color:#fff;padding:10px 12px}
+  header .row{display:flex;align-items:center;gap:8px}
+  header h1{font-size:17px;margin:0;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  header .prog{font-size:14px;opacity:.85}
+  .tabs{display:flex;gap:4px;margin-top:8px}
+  .tabs button{flex:1;padding:8px 0;border:0;border-radius:8px;background:#374151;color:#fff;font-size:15px}
+  .tabs button.on{background:var(--pri)}
+  main{padding:10px 12px 90px}
+  .card{background:var(--card);border-radius:12px;padding:12px;margin-bottom:10px;box-shadow:0 1px 2px rgba(0,0,0,.05)}
+  .btn{border:0;border-radius:10px;padding:10px 14px;font-size:16px;background:var(--pri);color:#fff}
+  .btn.gray{background:#e5e7eb;color:var(--ink)} .btn.warn{background:var(--warn)} .btn.bad{background:var(--bad)} .btn.ok{background:var(--ok)}
+  .btn.big{width:100%;padding:16px;font-size:20px}
+  input[type=text],textarea,select{width:100%;padding:12px;font-size:17px;border:1px solid var(--line);border-radius:10px;background:#fff}
+  .scanrow{display:flex;gap:8px}
+  .scanrow input{flex:1}
+  .chips{display:flex;gap:6px;overflow-x:auto;padding:2px 0 6px}
+  .chip{flex:none;border:1px solid var(--line);background:#fff;border-radius:999px;padding:6px 12px;font-size:14px;white-space:nowrap}
+  .chip.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+  .chip.done{border-color:var(--ok);color:var(--ok)}
+  .chip.on.done{background:var(--ok);color:#fff}
+  #result{display:none;border-radius:14px;padding:14px;margin-bottom:10px;color:#fff;text-align:center}
+  #result .uid{font-size:64px;font-weight:800;letter-spacing:2px;line-height:1.05}
+  #result .nm{font-size:26px;font-weight:700;margin-top:2px}
+  #result .meta{font-size:14px;opacity:.95;margin-top:6px;word-break:break-all}
+  #result .acts{display:flex;gap:8px;justify-content:center;margin-top:10px}
+  #result.err{background:var(--bad)!important}
+  .grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+  .tile{background:#fff;border-radius:10px;overflow:hidden;border:2px solid transparent;position:relative}
+  .tile img{width:100%;aspect-ratio:1/1;object-fit:cover;background:#eee;display:block}
+  .tile .t{padding:6px 8px;font-size:13px;line-height:1.35;word-break:break-all}
+  .tile .sz{position:absolute;top:6px;right:6px;background:rgba(17,24,39,.85);color:#fff;border-radius:6px;padding:2px 8px;font-size:15px;font-weight:700}
+  .tile .zb{position:absolute;top:6px;left:6px;color:#fff;border-radius:6px;padding:2px 8px;font-size:13px;font-weight:700}
+  .muted{color:var(--mute);font-size:14px}
+  .list .it{display:flex;gap:10px;padding:8px 0;border-top:1px solid var(--line);align-items:center}
+  .list .it:first-child{border-top:0}
+  .list img{width:52px;height:52px;object-fit:cover;border-radius:6px;background:#eee;flex:none}
+  .list .tx{flex:1;font-size:14px;word-break:break-all}
+  .badge{display:inline-block;border-radius:6px;padding:1px 7px;font-size:12px;color:#fff;margin-right:4px}
+  .basket{border-left:8px solid #999}
+  .basket h3{margin:0 0 4px;font-size:22px}
+  .modal{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:50;display:none;align-items:flex-end;justify-content:center}
+  .modal.on{display:flex}
+  .sheet{background:#fff;width:100%;max-width:640px;max-height:90vh;overflow:auto;border-radius:16px 16px 0 0;padding:16px}
+  .sheet h2{margin:0 0 10px;font-size:19px}
+  .sheet .row{display:flex;gap:8px;margin-top:10px}
+  .sheet .row .btn{flex:1}
+  #cam{position:fixed;inset:0;background:#000;z-index:60;display:none;flex-direction:column}
+  #cam.on{display:flex}
+  #cam video{flex:1;width:100%;object-fit:cover}
+  #cam .bar{padding:12px;display:flex;gap:8px;background:#111}
+  #cam .hint{position:absolute;top:40%;left:10%;right:10%;height:20%;border:3px solid rgba(255,255,255,.8);border-radius:12px;pointer-events:none}
+  .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#111827;color:#fff;padding:10px 16px;border-radius:10px;z-index:70;display:none;font-size:15px;max-width:90%}
+  .empty{text-align:center;padding:30px 10px;color:var(--mute)}
+  pre.rep{white-space:pre-wrap;font-family:inherit;font-size:14px;background:#f9fafb;border-radius:8px;padding:10px;margin:8px 0}
+  .exph{width:100%;border-radius:8px;margin-top:6px}
+</style>
+<style>
+  .st{display:inline-block;border-radius:6px;padding:1px 8px;font-size:13px;font-weight:700;color:#fff}
+  .st-ok{background:var(--ok)} .st-part{background:#ca8a04} .st-bad{background:var(--bad)} .st-none{background:#9ca3af} .st-cancel{background:#111827}
+  .order{border-left:8px solid #999}
+  .order .no{font-size:28px;font-weight:800;margin-right:8px}
+  .codes{font-family:ui-monospace,monospace;font-size:15px;background:#f3f4f6;border-radius:6px;padding:4px 8px;display:inline-block;margin:4px 4px 0 0}
+  .keep{background:#fef9c3;border-radius:8px;padding:6px 8px;margin-top:6px}
+  .sum{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;text-align:center}
+  .sum div{background:#fff;border-radius:10px;padding:8px 2px} .sum b{display:block;font-size:22px}
+  .warnbox{background:#fee2e2;border-radius:10px;padding:10px;margin-bottom:10px;font-size:14px}
+  #printArea{display:none}
+  @media print{
+    body{background:#fff} header,main,.modal,.toast,#net{display:none!important}
+    #printArea{display:block!important;font-family:Arial,"Microsoft JhengHei",sans-serif;color:#000}
+    .p-order{page-break-inside:avoid;border:1.5px solid #000;border-radius:4px;margin:0 0 6px;padding:4px 8px}
+    .p-head{display:flex;align-items:baseline;gap:12px;border-bottom:1px solid #000;padding-bottom:2px}
+    .p-no{font-size:26px;font-weight:800} .p-uid{font-size:22px;font-weight:800} .p-name{font-size:16px}
+    .p-code{font-size:12px;margin-left:auto;text-align:right}
+    .p-it{display:flex;gap:6px;align-items:center;font-size:12px;padding:1px 0}
+    .p-it img{width:34px;height:34px;object-fit:cover}
+    .p-flag{font-weight:800;border:1px solid #000;padding:0 4px;font-size:11px}
+    .p-keep{font-size:12px;border-top:1px dashed #000;margin-top:2px;padding-top:2px}
+    @page{size:A4;margin:10mm}
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="row">
+    <button id="backBtn" class="btn gray" style="display:none;padding:4px 10px;font-size:14px">← 出庫</button>
+    <h1 id="title">繪馬梨 出庫</h1><span class="prog" id="prog"></span>
+  </div>
+  <div class="tabs" id="tabs" style="display:none">
+    <button data-tab="orders" class="on">訂單</button>
+    <button data-tab="files">檔案</button>
+  </div>
+</header>
+
+<main>
+  <section id="v-login" style="display:none">
+    <div class="card" style="text-align:center;padding:30px 16px">
+      <h2 style="margin-top:0">繪馬梨 出庫</h2>
+      <p class="muted">請用公司的 Google 帳號登入</p>
+      <button class="btn big" id="loginBtn">使用 Google 登入</button>
+      <p class="muted" id="loginMsg"></p>
+    </div>
+  </section>
+
+  <!-- 出庫批次清單 -->
+  <section id="v-list" style="display:none">
+    <div class="card">
+      <button class="btn big" onclick="$('#upFile').click()">＋ 上傳出庫單</button>
+      <input type="file" id="upFile" accept=".xlsx,.xls" style="display:none">
+      <p class="muted" style="margin:8px 0 0">上傳後會先檢查每張單的籃子狀態和 7-11 單號，確認後才產生檔案。</p>
+    </div>
+    <div id="outList"></div>
+    <div class="muted" style="text-align:center;margin-top:10px"><a href="./">→ 入庫配籃</a>　<span id="whoami"></span></div>
+  </section>
+
+  <!-- 預覽（尚未產生） -->
+  <section id="v-preview" style="display:none">
+    <div id="pvWarn"></div>
+    <div class="sum" id="pvSum"></div>
+    <div class="card" style="margin-top:10px">
+      <label class="muted">起始單號（上次用到 <b id="lastNo">0</b>）</label>
+      <input type="text" id="startNo" inputmode="numeric">
+      <p class="muted" style="margin:6px 0">🔴 / ⚪ 只是警告，一樣會產生。不出貨的單請在下面按「取消」。</p>
+      <button class="btn ok big" id="genBtn">確認，產生出庫檔案</button>
+      <button class="btn gray" id="pvCancel" style="margin-top:8px;width:100%">放棄這次上傳</button>
+    </div>
+    <div id="pvOrders"></div>
+  </section>
+
+  <!-- 已產生：訂單 / 打包 -->
+  <section id="v-orders" style="display:none">
+    <div class="sum" id="odSum"></div>
+    <div class="card" style="margin-top:10px">
+      <div class="scanrow"><input type="text" id="find" placeholder="輸入籃子 ID 或單號" inputmode="numeric" autocomplete="off" enterkeyhint="search"></div>
+    </div>
+    <div class="chips" id="odFilter"></div>
+    <div id="odList"></div>
+  </section>
+
+  <section id="v-files" style="display:none">
+    <div class="card">
+      <h3 style="margin-top:0">出庫檔案</h3>
+      <p class="muted" id="fileInfo"></p>
+      <button class="btn big" id="dlMain">下載出貨單（含工作表2，給爬蟲）</button>
+      <button class="btn big" id="dlSG" style="margin-top:8px">下載 SG 出庫上傳檔</button>
+      <button class="btn gray big" id="printBtn" style="margin-top:8px">🖨 列印出貨單（新版）</button>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0">回報文字</h3>
+      <pre class="rep" id="repText"></pre>
+      <button class="btn" id="copyRep">複製回報文字</button>
+    </div>
+  </section>
+</main>
+
+<div id="printArea"></div>
+<div class="modal" id="mAsk"><div class="sheet"><h2 id="askMsg" style="white-space:pre-line"></h2><div class="row"><button class="btn gray" id="askNo">取消</button><button class="btn bad" id="askYes">確定</button></div></div></div>
+<div class="toast" id="toast"></div>
+<div id="net" style="position:fixed;top:0;left:0;right:0;z-index:80;background:#b45309;color:#fff;text-align:center;font-size:13px;padding:3px;display:none">離線中</div>
+
+<script>
+const firebaseConfig = {
+  apiKey: "AIzaSyBmb_51Pq-QatHwKkcrNlKw0B6e8YmKAsw",
+  authDomain: "ezfun-warehouse-billing.firebaseapp.com",
+  projectId: "ezfun-warehouse-billing",
+  storageBucket: "ezfun-warehouse-billing.firebasestorage.app",
+  messagingSenderId: "175590672953",
+  appId: "1:175590672953:web:6304ddce7b45b191529be8"
+};
+if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
+const auth=firebase.auth(), db=firebase.firestore();
+db.enablePersistence({synchronizeTabs:true}).catch(()=>{});
+const FV=firebase.firestore.FieldValue, FP=firebase.firestore.FieldPath;
+const C={batches:'huimali_batches',lines:'huimali_lines',state:'huimali_state',items:'huimali_items',out:'huimali_out',codes:'huimali_codes',meta:'huimali_meta'};
+const ZONE=['#6b7280','#2563eb','#dc2626','#16a34a','#9333ea','#ea580c','#0891b2','#be185d','#65a30d','#92400e'];
+const ST={ok:['✅ 整籃出','st-ok'],part:['🟡 部分出','st-part'],bad:['🔴 不能出','st-bad'],none:['⚪ 無紀錄','st-none'],cancel:['取消','st-cancel']};
+
+let O=null;          // 目前出庫 {id,..., orders}
+let PV=null;         // 預覽中的出庫
+let unsub=[], filt='all';
+const $=s=>document.querySelector(s);
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const zc=uid=>ZONE[+String(uid).slice(-1)||0];
+const me=()=>auth.currentUser?(auth.currentUser.displayName||auth.currentUser.email):'';
+function toast(m,ms=2200){const t=$('#toast');t.textContent=m;t.style.display='block';clearTimeout(t._h);t._h=setTimeout(()=>t.style.display='none',ms)}
+function close(sel){$(sel).classList.remove('on')}
+function ask(msg,yes='確定'){return new Promise(res=>{$('#askMsg').textContent=msg;$('#askYes').textContent=yes;$('#mAsk').classList.add('on');
+  $('#askYes').onclick=()=>{close('#mAsk');res(true)};$('#askNo').onclick=()=>{close('#mAsk');res(false)}})}
+addEventListener('online',()=>$('#net').style.display='none');addEventListener('offline',()=>$('#net').style.display='block');
+const mmdd=d=>String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0');
+const chunk=(a,n)=>{const r=[];for(let i=0;i<a.length;i+=n)r.push(a.slice(i,i+n));return r};
+
+/* ============ 入庫索引：把入庫批次的每一件建成 huimali_items（每件一筆） ============ */
+async function syncIndex(){
+  const qs=await db.collection(C.batches).get();
+  const todo=qs.docs.filter(d=>d.data().indexed!==true);
+  for(const bd of todo){
+    const ld=await db.collection(C.lines).doc(bd.id).get(); if(!ld.exists) continue;
+    const lines=ld.data().lines;
+    for(const part of chunk(lines,400)){
+      const b=db.batch();
+      // merge：不覆蓋已出庫的標記
+      part.forEach(l=>b.set(db.collection(C.items).doc(l.id),{uid:l.uid,sku:l.sku,img:l.img,bid:bd.id,box:l.box,qty:l.qty},{merge:true}));
+      await b.commit();
+    }
+    await db.collection(C.batches).doc(bd.id).update({indexed:true});
+  }
+  return todo.length;
+}
+
+/* ============ 解析出庫單 ============ */
+function parseDispatch(wb){
+  const ws=wb.Sheets['main']||wb.Sheets[wb.SheetNames[0]];
+  const rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:false});
+  const h=rows[0].map(x=>String(x).trim()), ci=n=>h.indexOf(n);
+  const need=['id','twShippingOrder.id','twShippingOrder.shippingInfo.recipient','thirdPartyIds','user.id','itemNoCode','img'];
+  const miss=need.filter(n=>ci(n)<0); if(miss.length) throw new Error('缺少欄位：'+miss.join('、'));
+  const out=[];
+  rows.slice(1).forEach((r,i)=>{const id=String(r[ci('id')]).trim(); if(!id) return;
+    out.push({id,oid:String(r[ci('twShippingOrder.id')]).trim(),name:String(r[ci('twShippingOrder.shippingInfo.recipient')]).trim(),
+      tp:String(r[ci('thirdPartyIds')]).trim(),uid:String(r[ci('user.id')]).trim(),sku:String(r[ci('itemNoCode')]).trim(),img:String(r[ci('img')]).trim(),i})});
+  if(!out.length) throw new Error('檔案裡沒有資料');
+  // 跟 BAS 一樣：先依 ID 尾數，再依 ID（數字），同 ID 維持原順序
+  out.sort((a,b)=>(+a.uid.slice(-1)-+b.uid.slice(-1))||(+a.uid-+b.uid)||(a.i-b.i));
+  return out;
+}
+
+/* ============ 對照入庫，判斷每張單的狀態 ============ */
+async function buildPreview(file){
+  toast('同步入庫資料…',8000);
+  await syncIndex();
+  const rows=parseDispatch(XLSX.read(await file.arrayBuffer(),{type:'array'}));
+  // 依訂單分組（保持排序後的順序）
+  const orders=[],om={};
+  for(const r of rows){
+    if(!om[r.oid]){om[r.oid]={oid:r.oid,uid:r.uid,name:r.name,codes:r.tp.split('#').map(s=>s.trim()).filter(Boolean),tp:r.tp,items:[],keep:[],cancel:false};orders.push(om[r.oid])}
+    om[r.oid].items.push({id:r.id,sku:r.sku,img:r.img});
+  }
+  // 讀入庫索引：這些收件人的所有件
+  const uids=[...new Set(rows.map(r=>r.uid))], byUid={};
+  for(const part of chunk(uids,30)){
+    const qs=await db.collection(C.items).where('uid','in',part).get();
+    qs.docs.forEach(d=>{const x={id:d.id,...d.data()};(byUid[x.uid]=byUid[x.uid]||[]).push(x)});
+  }
+  // 讀需要的入庫進度
+  const bids=[...new Set(Object.values(byUid).flat().map(x=>x.bid))], rcv={};
+  await Promise.all(bids.map(async b=>{const d=await db.collection(C.state).doc(b).get();rcv[b]=(d.data()||{}).rcv||{}}));
+  const got=x=>(rcv[x.bid]||{})[x.id]>0;
+  // 7-11 單號是否用過
+  const allCodes=[...new Set(orders.flatMap(o=>o.codes))], used={};
+  await Promise.all(allCodes.map(async c=>{const d=await db.collection(C.codes).doc(c).get();if(d.exists)used[c]=d.data()}));
+  const dispatchIds=new Set(rows.map(r=>r.id));
+  for(const o of orders){
+    const idx={};(byUid[o.uid]||[]).forEach(x=>idx[x.id]=x);
+    let found=0,miss=0,shipped=0;
+    o.items.forEach(it=>{const x=idx[it.id];
+      if(!x){it.s='none';return} found++;
+      if(x.shipped){it.s='shipped';it.outName=x.outName||'';shipped++;return}
+      if(got(x)){it.s='ok';it.box=x.box}else{it.s='miss';it.box=x.box;miss++}});
+    // 籃子裡還有、但這次不出的件
+    o.keep=(byUid[o.uid]||[]).filter(x=>!dispatchIds.has(x.id)&&!x.shipped&&got(x)).map(x=>({id:x.id,sku:x.sku,img:x.img,box:x.box}));
+    o.notYet=(byUid[o.uid]||[]).filter(x=>!dispatchIds.has(x.id)&&!x.shipped&&!got(x)).length;
+    o.dup=o.codes.filter(c=>used[c]).map(c=>({c,...used[c]}));
+    o.status=!found?'none':(miss||shipped)?'bad':o.keep.length?'part':'ok';
+    o.partial=found&&found<o.items.length;   // 有幾件是舊流程入庫
+  }
+  return {file:file.name,rows,orders};
+}
+
+/* ============ 畫面 ============ */
+function sumHtml(orders){
+  const c={ok:0,part:0,bad:0,none:0};orders.forEach(o=>{if(!o.cancel)c[o.status]++});
+  return Object.keys(c).map(k=>`<div><b>${c[k]}</b><span class="st ${ST[k][1]}">${ST[k][0]}</span></div>`).join('');
+}
+function orderCard(o,{preview=false,packed=false}={}){
+  const s=o.cancel?'cancel':o.status;
+  const itemTag=it=>({ok:'',none:'<span class="st st-none">無紀錄</span>',miss:'<span class="st st-bad">未到貨</span>',shipped:`<span class="st st-bad">已出過 ${esc(it.outName||'')}</span>`}[it.s]||'');
+  return `<div class="card order" style="border-left-color:${zc(o.uid)};${o.cancel?'opacity:.5':''}" data-oid="${esc(o.oid)}">
+    <div style="display:flex;align-items:center;flex-wrap:wrap;gap:4px">
+      ${o.no!=null?`<span class="no">${o.no}</span>`:''}<b style="font-size:22px">${esc(o.uid)}</b>&nbsp;${esc(o.name)}
+      <span style="margin-left:auto"><span class="st ${ST[s][1]}">${ST[s][0]}</span>${packed?' <span class="st st-ok">已打包</span>':''}</span></div>
+    <div class="muted">單號 ${esc(o.oid)} ・ ${o.items.length} 件${o.partial?' ・ 部分為舊流程入庫':''}${o.notYet?` ・ 籃內還有 ${o.notYet} 件未到貨`:''}</div>
+    <div>${o.codes.map(c=>`<span class="codes">${esc(c)}</span>`).join('')}</div>
+    ${o.dup.length?`<div class="warnbox" style="margin:6px 0 0">⚠️ 7-11 單號已經用過：${o.dup.map(d=>`${esc(d.c)}（${esc(d.outName||'')} 單 ${esc(d.no??'')}）`).join('、')}</div>`:''}
+    <div class="list" style="margin-top:4px">${o.items.map(it=>`<div class="it"><img src="${esc(it.img)}" loading="lazy" onerror="this.style.visibility='hidden'">
+      <div class="tx">${esc(it.sku)} ${itemTag(it)}${it.box?`<br><span class="muted">${esc(it.box)}</span>`:''}</div></div>`).join('')}</div>
+    ${o.keep.length?`<div class="keep"><b>留在籃子（這次不出）${o.keep.length} 件：</b><div class="list">${o.keep.map(k=>`<div class="it"><img src="${esc(k.img)}" loading="lazy" onerror="this.style.visibility='hidden'"><div class="tx">${esc(k.sku)}</div></div>`).join('')}</div></div>`:''}
+    <div class="row" style="margin-top:8px;display:flex;gap:8px">
+      ${preview?`<button class="btn ${o.cancel?'ok':'gray'}" data-act="cancel">${o.cancel?'恢復出貨':'取消（不出）'}</button>`
+               :(o.cancel?'':`<button class="btn ${packed?'gray':'ok'}" data-act="pack">${packed?'取消打包':'✓ 打包完成'}</button>`)}
+    </div></div>`;
+}
+
+function showPreview(){
+  show('preview');$('#tabs').style.display='none';$('#backBtn').style.display='inline-block';
+  $('#title').textContent='出庫預覽';$('#prog').textContent=`${PV.orders.length} 單 / ${PV.rows.length} 件`;
+  const dups=PV.orders.filter(o=>o.dup.length&&!o.cancel);
+  $('#pvWarn').innerHTML=dups.length?`<div class="warnbox">⚠️ 有 ${dups.length} 張單的 7-11 單號之前已經用過，爬蟲可能印不出來，請確認是否要取消。</div>`:'';
+  $('#pvSum').innerHTML=sumHtml(PV.orders);
+  $('#pvOrders').innerHTML=PV.orders.map(o=>orderCard(o,{preview:true})).join('');
+  $('#pvOrders').querySelectorAll('[data-act=cancel]').forEach(b=>b.onclick=()=>{const o=PV.orders.find(x=>x.oid===b.closest('.order').dataset.oid);o.cancel=!o.cancel;showPreview()});
+}
+
+async function generate(){
+  const start=parseInt($('#startNo').value);
+  if(!(start>0)) return toast('請輸入起始單號');
+  const n=PV.orders.length, active=PV.orders.filter(o=>!o.cancel);
+  if(!(await ask(`單號 ${start} ～ ${start+n-1}，共 ${n} 單${n-active.length?`（取消 ${n-active.length} 單）`:''}\n確定產生？`,'產生'))) return;
+  PV.orders.forEach((o,i)=>o.no=start+i);
+  const d=new Date(), key=mmdd(d);
+  // 當天第幾次出庫
+  const cref=db.collection(C.meta).doc('outCounter');
+  let seq=1;
+  await db.runTransaction(async tx=>{const c=(await tx.get(cref)).data()||{};seq=((c.seq||{})[key]||0)+1;
+    tx.set(cref,{last:start+n-1,seq:{[key]:seq},lastAt:Date.now()},{merge:true})});
+  const name=`${key}-${seq}`;
+  const ref=db.collection(C.out).doc();
+  await ref.set({name,file:PV.file,date:d.toISOString(),seq,start,orders:PV.orders,packed:{},createdAt:FV.serverTimestamp(),createdBy:me()});
+  // 記錄 7-11 單號、標記已出庫的件
+  const ops=[];
+  active.forEach(o=>{o.codes.forEach(c=>ops.push([db.collection(C.codes).doc(c),{outId:ref.id,outName:name,no:o.no,oid:o.oid,at:Date.now()}]));
+    o.items.forEach(it=>{if(it.s!=='none')ops.push([db.collection(C.items).doc(it.id),{shipped:true,outId:ref.id,outName:name}])})});
+  for(const part of chunk(ops,400)){const b=db.batch();part.forEach(([r,v])=>b.set(r,v,{merge:true}));await b.commit()}
+  PV=null;toast('已產生',2500);
+  await openOut(ref.id);show('files');
+}
+
+/* ============ 檔案（格式跟 BAS 一樣） ============ */
+function aoaSheet(aoa){return XLSX.utils.aoa_to_sheet(aoa)}
+function buildSG(o){
+  const H=['訂單編號','貨幣代碼','重量代碼','重量','運輸費用','稅款','訂單狀態','訂單日期','配送方式','付款狀態','付款方式','付款時間','佣金人員','附注','客戶電子郵件','帳單名字','帳單姓氏','帳單公司名稱','帳單電話','帳單電子郵件','帳單地址一','帳單地址二','帳單鄉鎮區','帳單城市','帳單縣市','帳單國家','帳單郵遞區號','收件人名字','收件人姓氏','收件人公司名稱','收件人電話','收件人電子郵件','收件地址一','收件地址二','收件鄉鎮區','收件城市','收件縣市','收件國家','收件郵遞區號','商品類型','商品名稱','商品SKU','商品價格','商品數量','商城訂單編號'];
+  const date=new Date(o.date);date.setHours(0,0,0,0);
+  const aoa=[H];
+  o.orders.filter(x=>!x.cancel).forEach(x=>x.items.forEach(it=>{
+    const r=new Array(45).fill(null);
+    r[0]=x.no;r[1]='TWD';r[6]='待處理';r[7]=date;r[8]='7-11';r[9]='已付款';r[13]=x.uid;
+    r[27]=x.no+'_'+x.name;r[28]=x.name;r[39]='庫存貨品';r[40]=it.sku;r[41]=it.sku;r[42]=0;r[43]=1;r[44]=x.oid;aoa.push(r)}));
+  const ws=XLSX.utils.aoa_to_sheet(aoa,{cellDates:true});
+  for(let i=2;i<=aoa.length;i++){const c=ws['H'+i];if(c){c.z='yyyy/mm/dd'}}
+  return ws;
+}
+function buildMain(o){
+  const date=new Date(o.date);date.setHours(0,0,0,0);
+  const s1=[['單','單號','明細備註','收件人','收件人地址','商品編號','數量','商品名稱','訂單日期',null,'img','img_show']];
+  o.orders.forEach(x=>x.items.forEach(it=>s1.push([x.no,x.oid,x.uid,x.name,x.tp.replace(/#/g,'\n'),it.sku,1,it.sku,date,null,it.img,null])));
+  const ws1=XLSX.utils.aoa_to_sheet(s1,{cellDates:true});
+  for(let i=2;i<=s1.length;i++){ws1['I'+i].z='yyyy/m/d';ws1['L'+i]={t:'n',f:'_xlfn.IMAGE(K'+i+',1)'}}
+  const s2=[['單','單號','user.id','收件人',null,null,null,null,null]];
+  o.orders.forEach(x=>{const c=x.codes;s2.push([x.no,x.oid,x.uid,x.name,c[0]||null,x.no,x.cancel?'取消':(c[1]||null),x.no,c[2]||null])});
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,ws1,'工作表1');
+  XLSX.utils.book_append_sheet(wb,buildSG(o),'工作表SG出');
+  XLSX.utils.book_append_sheet(wb,aoaSheet(s2),'工作表2');
+  return wb;
+}
+const activeCount=o=>o.orders.filter(x=>!x.cancel).length;
+$('#dlMain').onclick=()=>XLSX.writeFile(buildMain(O),`繪馬梨${O.name}-${activeCount(O)}單.xlsx`);
+$('#dlSG').onclick=()=>{const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,buildSG(O),'工作表SG出');XLSX.writeFile(wb,`繪馬梨${O.name}-${activeCount(O)}單SG出.xlsx`)};
+$('#printBtn').onclick=()=>{
+  $('#printArea').innerHTML=`<div style="font-size:13px;margin-bottom:4px">繪馬梨出貨單 ${esc(O.name)} ・ ${O.orders.length} 單 ・ 單號 ${O.start}～${O.start+O.orders.length-1}</div>`+
+  O.orders.map(x=>`<div class="p-order" style="${x.cancel?'opacity:.4':''}">
+    <div class="p-head"><span class="p-no">${x.no}</span><span class="p-uid">${esc(x.uid)}</span><span class="p-name">${esc(x.name)}</span>
+      ${x.cancel?'<span class="p-flag">取消</span>':x.status!=='ok'?`<span class="p-flag">${ST[x.status][0].replace(/^\S+ /,'')}</span>`:''}
+      <span class="p-code">${x.codes.map(esc).join('<br>')}</span></div>
+    ${x.items.map(it=>`<div class="p-it"><img src="${esc(it.img)}" onerror="this.style.visibility='hidden'"><span>☐ ${esc(it.sku)}</span>${it.s==='miss'?'<span class="p-flag">未到貨</span>':it.s==='shipped'?'<span class="p-flag">已出過</span>':''}</div>`).join('')}
+    ${x.keep.length?`<div class="p-keep"><b>留籃：</b>${x.keep.map(k=>esc(k.sku)).join('　')}</div>`:''}</div>`).join('');
+  setTimeout(()=>window.print(),300);
+};
+
+/* ============ 出庫清單 / 開啟 ============ */
+function stopListen(){unsub.forEach(f=>f());unsub=[]}
+async function showList(){
+  stopListen();O=null;PV=null;$('#tabs').style.display='none';$('#backBtn').style.display='none';$('#title').textContent='繪馬梨 出庫';$('#prog').textContent='';
+  show('list');$('#whoami').innerHTML=`登入：${esc(me())}　<a href="#" id="logout">登出</a>`;$('#logout').onclick=e=>{e.preventDefault();auth.signOut()};
+  $('#outList').innerHTML='<div class="empty">讀取中…</div>';
+  try{
+    const qs=await db.collection(C.out).orderBy('createdAt','desc').limit(30).get();
+    $('#outList').innerHTML=qs.docs.length?qs.docs.map(d=>{const x=d.data(),n=x.orders.filter(o=>!o.cancel).length,p=Object.values(x.packed||{}).filter(Boolean).length;
+      return `<div class="card" data-id="${d.id}" style="cursor:pointer"><div style="display:flex;justify-content:space-between"><b style="font-size:18px">繪馬梨${esc(x.name)}</b><span>打包 ${p}/${n}</span></div>
+      <div class="muted">單號 ${x.start}～${x.start+x.orders.length-1} ・ ${esc(x.createdBy||'')}</div></div>`}).join(''):'<div class="empty">還沒有出庫紀錄</div>';
+    $('#outList').querySelectorAll('[data-id]').forEach(el=>el.onclick=()=>openOut(el.dataset.id));
+  }catch(e){$('#outList').innerHTML=`<div class="empty">讀取失敗：${esc(e.message)}</div>`}
+}
+async function openOut(id){
+  stopListen();
+  unsub.push(db.collection(C.out).doc(id).onSnapshot(d=>{if(!d.exists)return;O={id,...d.data()};renderOut()}));
+  $('#tabs').style.display='flex';$('#backBtn').style.display='inline-block';show('orders');
+}
+function renderOut(){
+  if(!O) return;
+  const act=O.orders.filter(o=>!o.cancel), p=act.filter(o=>O.packed[o.oid]).length;
+  $('#title').textContent='繪馬梨'+O.name;$('#prog').textContent=`打包 ${p}/${act.length}`;
+  $('#odSum').innerHTML=sumHtml(O.orders);
+  const F=[['all','全部'],['todo','未打包'],['bad','🔴'],['part','🟡'],['none','⚪'],['done','已打包']];
+  $('#odFilter').innerHTML=F.map(([k,t])=>`<button class="chip ${filt===k?'on':''}" data-f="${k}">${t}</button>`).join('');
+  $('#odFilter').querySelectorAll('.chip').forEach(c=>c.onclick=()=>{filt=c.dataset.f;renderOut()});
+  const q=$('#find').value.trim();
+  let list=O.orders;
+  if(q) list=list.filter(o=>o.uid===q||o.oid===q||String(o.no)===q||o.uid.endsWith(q));
+  else list=list.filter(o=>filt==='all'||(filt==='todo'&&!o.cancel&&!O.packed[o.oid])||(filt==='done'&&O.packed[o.oid])||o.status===filt);
+  $('#odList').innerHTML=list.map(o=>orderCard(o,{packed:!!O.packed[o.oid]})).join('')||'<div class="empty">沒有符合的單</div>';
+  $('#odList').querySelectorAll('[data-act=pack]').forEach(b=>b.onclick=()=>{const oid=b.closest('.order').dataset.oid;
+    db.collection(C.out).doc(O.id).update(new FP('packed',oid),!O.packed[oid]).catch(e=>toast(e.message));if(q){$('#find').value='';}});
+  $('#fileInfo').textContent=`單號 ${O.start}～${O.start+O.orders.length-1}，出貨 ${act.length} 單${O.orders.length-act.length?`、取消 ${O.orders.length-act.length} 單`:''}。順序跟 BAS 一樣（ID 尾數 → ID）。`;
+  const lines=[`【繪馬梨出庫】${O.name}　共 ${act.length} 單`];
+  const bad=act.filter(o=>o.status==='bad'), dup=act.filter(o=>o.dup.length);
+  if(bad.length){lines.push('','■ 有件未到貨 / 已出過：');bad.forEach(o=>lines.push(`・${o.no}｜${o.uid} ${o.name}｜`+o.items.filter(i=>i.s==='miss'||i.s==='shipped').map(i=>i.sku+(i.s==='shipped'?'（已出過）':'')).join('、')))}
+  if(dup.length){lines.push('','■ 7-11 單號重複：');dup.forEach(o=>lines.push(`・${o.no}｜${o.uid} ${o.name}｜${o.dup.map(d=>d.c).join('、')}`))}
+  const cancel=O.orders.filter(o=>o.cancel);
+  if(cancel.length){lines.push('','■ 取消：');cancel.forEach(o=>lines.push(`・${o.no}｜${o.uid} ${o.name}｜單號 ${o.oid}`))}
+  if(lines.length===1) lines.push('全部正常。');
+  $('#repText').textContent=lines.join('\n');
+}
+$('#find').addEventListener('input',()=>renderOut());
+$('#copyRep').onclick=async()=>{try{await navigator.clipboard.writeText($('#repText').textContent);toast('已複製')}catch(e){toast('複製失敗，請長按手動複製')}};
+
+$('#upFile').onchange=async e=>{const f=e.target.files[0];e.target.value='';if(!f)return;
+  try{PV=await buildPreview(f);
+    const c=(await db.collection(C.meta).doc('outCounter').get()).data()||{};
+    $('#lastNo').textContent=c.last||0;$('#startNo').value=(c.last||0)+1;toast('',1);showPreview();
+  }catch(err){toast('讀取失敗：'+err.message,5000)}};
+$('#genBtn').onclick=()=>generate().catch(e=>toast('產生失敗：'+e.message,5000));
+$('#pvCancel').onclick=()=>{PV=null;showList()};
+$('#backBtn').onclick=()=>showList();
+
+function show(tab){
+  ['login','list','preview','orders','files'].forEach(t=>$('#v-'+t).style.display=t===tab?'block':'none');
+  $('#tabs').querySelectorAll('button').forEach(b=>b.classList.toggle('on',b.dataset.tab===tab));
+}
+$('#tabs').querySelectorAll('button').forEach(b=>b.onclick=()=>show(b.dataset.tab));
+
+$('#loginBtn').onclick=async()=>{const p=new firebase.auth.GoogleAuthProvider();
+  try{await auth.signInWithPopup(p)}catch(e){if(['auth/popup-blocked','auth/operation-not-supported-in-this-environment','auth/cancelled-popup-request'].includes(e.code))return auth.signInWithRedirect(p);$('#loginMsg').textContent='登入失敗：'+(e.code||e.message)}};
+auth.getRedirectResult().catch(e=>{$('#loginMsg').textContent='登入失敗：'+(e.code||e.message)});
+auth.onAuthStateChanged(u=>{if(!u){stopListen();show('login');return}showList()});
+if(!navigator.onLine) $('#net').style.display='block';
+</script>
+</body>
+</html>
