@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
-<title>繪馬梨 入庫配籃</title>
+<title>入庫配籃</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
@@ -102,7 +102,7 @@
 <header>
   <div class="row">
     <button id="backBtn" class="btn gray" style="display:none;padding:4px 10px;font-size:14px">← 批次</button>
-    <h1 id="title">繪馬梨 入庫配籃</h1><span class="prog" id="prog"></span>
+    <h1 id="title">入庫配籃</h1><span class="prog" id="prog"></span>
   </div>
   <div class="tabs" id="tabs" style="display:none">
     <button data-tab="match" class="on">配籃</button>
@@ -112,10 +112,24 @@
 </header>
 
 <main>
+  <!-- 選廠商 -->
+  <section id="v-vendor" style="display:none">
+    <div class="card"><h2 style="margin-top:0">選擇廠商</h2><div id="vendorList"></div></div>
+    <div class="card">
+      <h3 style="margin-top:0">＋ 新增廠商</h3>
+      <label class="muted">代號（英文小寫，用在網址，例如 huimali）</label><input type="text" id="nvId" autocapitalize="off">
+      <label class="muted" style="display:block;margin-top:6px">名稱</label><input type="text" id="nvName">
+      <label class="muted" style="display:block;margin-top:6px">SG 客戶名稱</label><input type="text" id="nvCust" placeholder="例如 汐止-繪馬梨">
+      <label class="muted" style="display:block;margin-top:6px">SG 倉庫</label><input type="text" id="nvWh" value="汐止倉">
+      <label class="muted" style="display:block;margin-top:6px">配送方式</label><input type="text" id="nvShip" value="7-11">
+      <p class="muted">入庫單、出庫單需要跟繪馬梨相同的欄位格式。格式不同的廠商，請先提供範例檔調整。</p>
+      <button class="btn" id="nvSave">新增</button>
+    </div>
+  </section>
   <!-- 登入 -->
   <section id="v-login" style="display:none">
     <div class="card" style="text-align:center;padding:30px 16px">
-      <h2 style="margin-top:0">繪馬梨 入庫配籃</h2>
+      <h2 style="margin-top:0">入庫配籃</h2>
       <p class="muted">請用公司的 Google 帳號登入（跟 EZFUN Hub 同一個帳號）</p>
       <button class="btn big" id="loginBtn">使用 Google 登入</button>
       <p class="muted" id="loginMsg"></p>
@@ -133,7 +147,7 @@
     <div style="text-align:center;margin:10px 0">
       <button class="btn gray" id="showClosed">顯示已結案</button>
     </div>
-    <div class="muted" style="text-align:center"><a href="./out.html">→ 出庫</a>　<span id="whoami"></span></div>
+    <div class="muted" style="text-align:center"><a href="#" id="toOut">→ 出庫</a>　<a href="#" id="toVendor">切換廠商</a>　<span id="whoami"></span></div>
   </section>
 
   <!-- 配籃 -->
@@ -249,7 +263,52 @@ if(IN_APP) document.getElementById('inapp').style.display='block';
 db.enablePersistence({synchronizeTabs:true}).catch(()=>{});
 const FV=firebase.firestore.FieldValue, FP=firebase.firestore.FieldPath;
 // 資料位置（都以 huimali_ 開頭）
-const C={sgx:'huimali_sgx',batches:'huimali_batches',lines:'huimali_lines',state:'huimali_state',ex:'huimali_ex',meta:'huimali_meta',items:'huimali_items'};
+const C={batches:'bkt_batches',lines:'bkt_lines',state:'bkt_state',ex:'bkt_ex',sgx:'bkt_sgx',items:'bkt_items',out:'bkt_out',codes:'bkt_codes',meta:'bkt_meta'};
+const PAGE_NAME='入庫配籃';
+/* ================= 廠商（通用化） =================
+   每個廠商一份設定；資料都存在 bkt_ 開頭的集合，用 v 欄位區分廠商 */
+const DEFAULT_VENDORS={huimali:{name:'繪馬梨',sgCustomer:'汐止-繪馬梨',warehouse:'汐止倉',ship:'7-11'}};
+let VENDORS={...DEFAULT_VENDORS}, VID=null, V=DEFAULT_VENDORS.huimali;
+const vOf=x=>x.v||'huimali';   // 舊資料沒有 v 的都是繪馬梨
+async function loadVendors(){try{const d=await db.collection(C.meta).doc('vendors').get();if(d.exists)VENDORS={...DEFAULT_VENDORS,...d.data()}}catch(e){}}
+function useVendor(id){
+  VID=id;V=VENDORS[id];try{localStorage.setItem('bkt_v',id)}catch(e){}
+  const u=new URL(location.href);u.searchParams.set('v',id);history.replaceState(null,'',u);
+  document.title=`${V.name} ${PAGE_NAME}`;
+}
+function vendorFromUrl(){const q=new URLSearchParams(location.search).get('v');let s=null;try{s=localStorage.getItem('bkt_v')}catch(e){}return VENDORS[q]?q:VENDORS[s]?s:null}
+function showVendors(){
+  $('#tabs').style.display='none';$('#backBtn').style.display='none';$('#title').textContent=PAGE_NAME;$('#prog').textContent='';
+  show('vendor');
+  $('#vendorList').innerHTML=Object.entries(VENDORS).map(([id,x])=>`<button class="btn big" style="margin-bottom:8px" data-v="${esc(id)}">${esc(x.name)}</button>`).join('');
+  $('#vendorList').querySelectorAll('[data-v]').forEach(b=>b.onclick=()=>{useVendor(b.dataset.v);showList()});
+}
+document.getElementById('nvSave').onclick=async()=>{
+  const id=$('#nvId').value.trim().toLowerCase(), x={name:$('#nvName').value.trim(),sgCustomer:$('#nvCust').value.trim(),warehouse:$('#nvWh').value.trim(),ship:$('#nvShip').value.trim()};
+  if(!/^[a-z0-9_-]{2,20}$/.test(id)) return toast('代號請用 2～20 個英文小寫或數字');
+  if(VENDORS[id]) return toast('這個代號已經有了');
+  if(!x.name||!x.sgCustomer) return toast('請填名稱和 SG 客戶名稱');
+  await db.collection(C.meta).doc('vendors').set({[id]:x},{merge:true});VENDORS[id]=x;toast('已新增 '+x.name);showVendors();
+};
+// 一次性：把舊的 huimali_* 資料搬到 bkt_*
+async function migrateOnce(){
+  const mref=db.collection(C.meta).doc('migration');
+  if((await mref.get()).exists) return;
+  toast('第一次使用新版，資料搬移中…',8000);
+  const OLD={batches:'huimali_batches',lines:'huimali_lines',state:'huimali_state',ex:'huimali_ex',sgx:'huimali_sgx',items:'huimali_items',out:'huimali_out',codes:'huimali_codes',meta:'huimali_meta'};
+  const ops=[];
+  for(const k of ['batches','lines','state','ex','sgx','items','out','codes','meta']){
+    let qs;try{qs=await db.collection(OLD[k]).get()}catch(e){continue}
+    qs.docs.forEach(d=>{const x=d.data();
+      if(k==='codes') ops.push([db.collection(C.codes).doc('huimali_'+d.id),{...x,v:'huimali'}]);
+      else if(k==='meta'){ if(d.id==='learn')ops.push([db.collection(C.meta).doc('learn'),x]); if(d.id==='outCounter')ops.push([db.collection(C.meta).doc('outCounter_huimali'),x]) }
+      else ops.push([db.collection(C[k]).doc(d.id),['batches','items','out'].includes(k)?{...x,v:x.v||'huimali'}:x]);
+    });
+  }
+  for(let i=0;i<ops.length;i+=400){const b=db.batch();ops.slice(i,i+400).forEach(([r,v])=>b.set(r,v,{merge:true}));await b.commit()}
+  await mref.set({at:Date.now(),by:me(),docs:ops.length});
+}
+
 
 /* ================= 狀態 ================= */
 const ZONE=['#6b7280','#2563eb','#dc2626','#16a34a','#9333ea','#ea580c','#0891b2','#be185d','#65a30d','#92400e'];
@@ -325,7 +384,7 @@ async function createBatch(files){
   const d=new Date(), name=`${d.getMonth()+1}/${d.getDate()} `+names.join('、');
   const ref=db.collection(C.batches).doc();
   const b=db.batch();
-  b.set(ref,{name,files:names,lineCount:lines.length,qty:lines.reduce((a,l)=>a+l.qty,0),done:0,closed:false,
+  b.set(ref,{v:VID,name,files:names,lineCount:lines.length,qty:lines.reduce((a,l)=>a+l.qty,0),done:0,closed:false,
     createdAt:FV.serverTimestamp(),createdBy:me()});
   b.set(db.collection(C.lines).doc(ref.id),{lines});
   b.set(db.collection(C.state).doc(ref.id),{rcv:{}});
@@ -350,14 +409,16 @@ async function addFilesToBatch(files){
 
 async function showList(){
   stopListen(); S=null;
-  $('#tabs').style.display='none';$('#backBtn').style.display='none';$('#prog').textContent='';$('#title').textContent='繪馬梨 入庫配籃';
+  $('#tabs').style.display='none';$('#backBtn').style.display='none';$('#prog').textContent='';$('#title').textContent=V.name+' 入庫配籃';
   show('list');
   $('#whoami').innerHTML=`登入：${esc(me())}　<a href="#" id="logout">登出</a>`;
   $('#logout').onclick=e=>{e.preventDefault();auth.signOut()};
+  $('#toOut').href='./out.html?v='+VID;$('#toVendor').onclick=e=>{e.preventDefault();showVendors()};
   $('#batchList').innerHTML='<div class="empty">讀取中…</div>';
   try{
-    const qs=await db.collection(C.batches).orderBy('createdAt','desc').limit(40).get();
-    const arr=qs.docs.map(d=>({id:d.id,...d.data()})).filter(b=>showClosed||!b.closed);
+    const qs=await db.collection(C.batches).where('v','==',VID).get();
+    const ts=b=>b.createdAt&&b.createdAt.toDate?b.createdAt.toDate().getTime():0;
+    const arr=qs.docs.map(d=>({id:d.id,...d.data()})).filter(b=>showClosed||!b.closed).sort((a,b)=>ts(b)-ts(a)).slice(0,40);
     $('#batchList').innerHTML=arr.length?arr.map(b=>{
       const pct=b.qty?Math.round(b.done/b.qty*100):0;
       const t=b.createdAt?b.createdAt.toDate():null;
@@ -394,7 +455,7 @@ async function syncIndex(){   // 把入庫批次的每一件建成 huimali_items
   for(const bd of qs.docs.filter(d=>d.data().indexed!==true)){
     const ld=await db.collection(C.lines).doc(bd.id).get(); if(!ld.exists) continue;
     for(const part of chunk(ld.data().lines,400)){const b=db.batch();
-      part.forEach(l=>b.set(db.collection(C.items).doc(l.id),{uid:l.uid,sku:l.sku,img:l.img,bid:bd.id,box:l.box,qty:l.qty},{merge:true}));await b.commit()}
+      part.forEach(l=>b.set(db.collection(C.items).doc(l.id),{v:vOf(bd.data()),uid:l.uid,sku:l.sku,img:l.img,bid:bd.id,box:l.box,qty:l.qty},{merge:true}));await b.commit()}
     await db.collection(C.batches).doc(bd.id).update({indexed:true});
   }
 }
@@ -402,7 +463,7 @@ async function loadPrior(){
   const id=S.id; await syncIndex(); if(!S||S.id!==id) return;
   const uids=[...new Set(S.lines.map(l=>l.uid))], items=[];
   for(const part of chunk(uids,30)){const qs=await db.collection(C.items).where('uid','in',part).get();qs.docs.forEach(d=>items.push({id:d.id,...d.data()}))}
-  const other=items.filter(x=>x.bid!==id&&!x.shipped);
+  const other=items.filter(x=>x.bid!==id&&!x.shipped&&vOf(x)===VID);
   const bids=[...new Set(other.map(x=>x.bid))], st={};
   await Promise.all(bids.map(async b=>{const d=await db.collection(C.state).doc(b).get();st[b]=(d.data()||{}).rcv||{}}));
   const P={};
@@ -635,7 +696,7 @@ function renderReport(){
   $('#missList').innerHTML=miss.length?Object.keys(g).map(b=>`<div style="margin-top:6px"><b>${esc(b)}</b>（${g[b].length}）
     <div class="list">${g[b].map(l=>`<div class="it"><img src="${esc(l.img)}" loading="lazy" onerror="this.style.visibility='hidden'"><div class="tx">${esc(l.sku)}${rem(l)>1?' ×'+rem(l):''}${l.st&&l.st!=='onFlight'?' <b style="color:#92400e">['+esc(l.st)+']</b>':''}<br><span class="badge" style="background:${zc(l.uid)}">${esc(l.uid)}</span>${esc(l.name)}</div></div>`).join('')}</div></div>`).join(''):'<div class="muted">全部到齊 ✅</div>';
   const {t,d}=totals();
-  const lines=[`【繪馬梨入庫回報】${S.files.join('、')}`,`已到 ${d} / ${t} 件`];
+  const lines=[`【${V.name}入庫回報】${S.files.join('、')}`,`已到 ${d} / ${t} 件`];
   if(miss.length){lines.push('','■ 入庫單上有、但沒到貨：');Object.keys(g).forEach(b=>g[b].forEach(l=>lines.push(`・${l.box}｜${l.uid} ${l.name}｜${l.sku}${rem(l)>1?' ×'+rem(l):''}${l.st&&l.st!=='onFlight'?' ['+l.st+']':''}`)))}
   if(S.ex.length){lines.push('','■ 例外（照片另附）：');S.ex.forEach((e,i)=>lines.push(`${i+1}. ${e.type}｜${e.box}｜${e.note}`))}
   if(!miss.length&&!S.ex.length) lines.push('全部到齊，無例外。');
@@ -727,12 +788,12 @@ $('#exportBtn').onclick=()=>{
   const wb=XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(rows),'配籃結果');
   XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(ex.length?ex:[{類型:'無'}]),'例外');
-  try{XLSX.writeFile(wb,'繪馬梨-'+S.files.join('_').replace(/\//g,'_')+'-配籃結果.xlsx')}catch(e){toast('這個環境不能下載，請用「複製回報文字」',3500)}
+  try{XLSX.writeFile(wb,V.name+'-'+S.files.join('_').replace(/\//g,'_')+'-配籃結果.xlsx')}catch(e){toast('這個環境不能下載，請用「複製回報文字」',3500)}
 };
 /* ================= SG 上傳檔 =================
    新品：整批所有入庫單合併，同 SKU 只留一列（含未到貨，舊商品 SG 會自動擋掉）
    入庫：只算「已到貨、還沒下載過」的件，同 SKU 加總；SG 只收一個工作表，來源明細另存一檔
-   每次下載都記錄（huimali_sgx），下次不再重複；上傳失敗可以作廢重來 */
+   每次下載都記錄（bkt_sgx），下次不再重複；上傳失敗可以作廢重來 */
 const cleanSG=s=>String(s??'').replace(/[\r\n]/g,'').trim();
 const ymd=()=>{const d=new Date();return String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0')};
 const fileTag=()=>S.files.join('_').replace(/\//g,'_');
@@ -773,7 +834,7 @@ function srcWorkbook(x){   // 來源明細（另一個檔，不要上傳 SG）
   return wb;
 }
 function sgDownload(x,seq){
-  const base=`繪馬梨${ymd()}入-${fileTag()}-第${seq}次`;
+  const base=`${V.name}${ymd()}入-${fileTag()}-第${seq}次`;
   try{XLSX.writeFile(onlySheet(sgInAoa(x.items)),base+'-SG入庫.xlsx')}catch(e){return toast('下載失敗：'+e.message)}
   // 第二個檔稍等一下再下載（有些手機一次只允許一個下載）
   setTimeout(()=>{try{XLSX.writeFile(srcWorkbook(x),base+'-來源明細（不用上傳）.xlsx')}catch(e){}},1200);
@@ -803,8 +864,8 @@ $('#sgNewBtn').onclick=()=>{
   const H=['庫存SKU','庫存貨品名稱','手上庫存','備註','貨架','客戶','倉庫','價格','貨品狀態','重量單位','庫存狀況','主庫存SKU','成本','品牌','類別','國際條碼（UPC）','重量','長度','寬度','高度','體積重量','安全庫存','補貨天數'];
   const seen=new Set(),aoa=[H];
   [...S.lines].sort(sortSku).forEach(l=>{const k=cleanSG(l.sku);if(!k||seen.has(k))return;seen.add(k);
-    const r=new Array(23).fill(null);r[0]=k;r[1]=k;r[2]=0;r[5]='汐止-繪馬梨';r[6]='汐止倉';r[7]=0;r[8]='活躍';r[9]='公斤';r[10]='有貨';aoa.push(r)});
-  try{XLSX.writeFile(onlySheet(aoa),`繪馬梨${ymd()}入-${fileTag()}-SG創建新品.xlsx`)}catch(e){toast('下載失敗：'+e.message)}
+    const r=new Array(23).fill(null);r[0]=k;r[1]=k;r[2]=0;r[5]=V.sgCustomer;r[6]=V.warehouse;r[7]=0;r[8]='活躍';r[9]='公斤';r[10]='有貨';aoa.push(r)});
+  try{XLSX.writeFile(onlySheet(aoa),`${V.name}${ymd()}入-${fileTag()}-SG創建新品.xlsx`)}catch(e){toast('下載失敗：'+e.message)}
 };
 $('#closeBtn').onclick=async()=>{
   const on=!S.closed;
@@ -825,7 +886,7 @@ $('#numBtn').onclick=()=>{const on=$('#scan').getAttribute('inputmode')!=='numer
 try{setNum(localStorage.getItem('hml_num')==='1')}catch(e){}
 
 function show(tab){
-  ['login','list','match','baskets','report'].forEach(t=>$('#v-'+t).style.display=t===tab?'block':'none');
+  ['login','vendor','list','match','baskets','report'].forEach(t=>$('#v-'+t).style.display=t===tab?'block':'none');
   $('#tabs').querySelectorAll('button').forEach(b=>b.classList.toggle('on',b.dataset.tab===tab));
   if(tab==='match') setTimeout(()=>$('#scan').focus(),50);
 }
@@ -873,8 +934,12 @@ $('#loginBtn').onclick=async()=>{
 auth.getRedirectResult().catch(e=>{$('#loginMsg').textContent='登入失敗：'+(e.code||e.message)});
 auth.onAuthStateChanged(u=>{
   if(!u){stopListen();S=null;$('#tabs').style.display='none';$('#backBtn').style.display='none';show('login');return}
-  db.collection(C.meta).doc('learn').onSnapshot(d=>{const x=d.data()||{};L={size:x.size||{},bc:x.bc||{}}},()=>{});
-  showList();
+  (async()=>{
+    try{await migrateOnce()}catch(e){console.warn(e)}
+    await loadVendors();
+    db.collection(C.meta).doc('learn').onSnapshot(d=>{const x=d.data()||{};L={size:x.size||{},bc:x.bc||{}}},()=>{});
+    const v=vendorFromUrl(); if(v){useVendor(v);showList()}else showVendors();
+  })();
 });
 if(!navigator.onLine) $('#net').style.display='block';
 </script>

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
-<title>繪馬梨 出庫</title>
+<title>出庫</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
@@ -115,7 +115,7 @@
 <header>
   <div class="row">
     <button id="backBtn" class="btn gray" style="display:none;padding:4px 10px;font-size:14px">← 出庫</button>
-    <h1 id="title">繪馬梨 出庫</h1><span class="prog" id="prog"></span>
+    <h1 id="title">出庫</h1><span class="prog" id="prog"></span>
   </div>
   <div class="tabs" id="tabs" style="display:none">
     <button data-tab="orders" class="on">訂單</button>
@@ -124,9 +124,23 @@
 </header>
 
 <main>
+  <!-- 選廠商 -->
+  <section id="v-vendor" style="display:none">
+    <div class="card"><h2 style="margin-top:0">選擇廠商</h2><div id="vendorList"></div></div>
+    <div class="card">
+      <h3 style="margin-top:0">＋ 新增廠商</h3>
+      <label class="muted">代號（英文小寫，用在網址，例如 huimali）</label><input type="text" id="nvId" autocapitalize="off">
+      <label class="muted" style="display:block;margin-top:6px">名稱</label><input type="text" id="nvName">
+      <label class="muted" style="display:block;margin-top:6px">SG 客戶名稱</label><input type="text" id="nvCust" placeholder="例如 汐止-繪馬梨">
+      <label class="muted" style="display:block;margin-top:6px">SG 倉庫</label><input type="text" id="nvWh" value="汐止倉">
+      <label class="muted" style="display:block;margin-top:6px">配送方式</label><input type="text" id="nvShip" value="7-11">
+      <p class="muted">入庫單、出庫單需要跟繪馬梨相同的欄位格式。格式不同的廠商，請先提供範例檔調整。</p>
+      <button class="btn" id="nvSave">新增</button>
+    </div>
+  </section>
   <section id="v-login" style="display:none">
     <div class="card" style="text-align:center;padding:30px 16px">
-      <h2 style="margin-top:0">繪馬梨 出庫</h2>
+      <h2 style="margin-top:0">出庫</h2>
       <p class="muted">請用公司的 Google 帳號登入</p>
       <button class="btn big" id="loginBtn">使用 Google 登入</button>
       <p class="muted" id="loginMsg"></p>
@@ -141,7 +155,7 @@
       <p class="muted" style="margin:8px 0 0">上傳後會先檢查每張單的籃子狀態和 7-11 單號，確認後才產生檔案。</p>
     </div>
     <div id="outList"></div>
-    <div class="muted" style="text-align:center;margin-top:10px"><a href="./">→ 入庫配籃</a>　<span id="whoami"></span></div>
+    <div class="muted" style="text-align:center;margin-top:10px"><a href="#" id="toIn">→ 入庫配籃</a>　<a href="#" id="toVendor">切換廠商</a>　<span id="whoami"></span></div>
   </section>
 
   <!-- 預覽（尚未產生） -->
@@ -229,7 +243,52 @@ const auth=firebase.auth(), db=firebase.firestore();
 if(IN_APP) document.getElementById('inapp').style.display='block';
 db.enablePersistence({synchronizeTabs:true}).catch(()=>{});
 const FV=firebase.firestore.FieldValue, FP=firebase.firestore.FieldPath;
-const C={batches:'huimali_batches',lines:'huimali_lines',state:'huimali_state',items:'huimali_items',out:'huimali_out',codes:'huimali_codes',meta:'huimali_meta'};
+const C={batches:'bkt_batches',lines:'bkt_lines',state:'bkt_state',ex:'bkt_ex',sgx:'bkt_sgx',items:'bkt_items',out:'bkt_out',codes:'bkt_codes',meta:'bkt_meta'};
+const PAGE_NAME='出庫';
+/* ================= 廠商（通用化） =================
+   每個廠商一份設定；資料都存在 bkt_ 開頭的集合，用 v 欄位區分廠商 */
+const DEFAULT_VENDORS={huimali:{name:'繪馬梨',sgCustomer:'汐止-繪馬梨',warehouse:'汐止倉',ship:'7-11'}};
+let VENDORS={...DEFAULT_VENDORS}, VID=null, V=DEFAULT_VENDORS.huimali;
+const vOf=x=>x.v||'huimali';   // 舊資料沒有 v 的都是繪馬梨
+async function loadVendors(){try{const d=await db.collection(C.meta).doc('vendors').get();if(d.exists)VENDORS={...DEFAULT_VENDORS,...d.data()}}catch(e){}}
+function useVendor(id){
+  VID=id;V=VENDORS[id];try{localStorage.setItem('bkt_v',id)}catch(e){}
+  const u=new URL(location.href);u.searchParams.set('v',id);history.replaceState(null,'',u);
+  document.title=`${V.name} ${PAGE_NAME}`;
+}
+function vendorFromUrl(){const q=new URLSearchParams(location.search).get('v');let s=null;try{s=localStorage.getItem('bkt_v')}catch(e){}return VENDORS[q]?q:VENDORS[s]?s:null}
+function showVendors(){
+  $('#tabs').style.display='none';$('#backBtn').style.display='none';$('#title').textContent=PAGE_NAME;$('#prog').textContent='';
+  show('vendor');
+  $('#vendorList').innerHTML=Object.entries(VENDORS).map(([id,x])=>`<button class="btn big" style="margin-bottom:8px" data-v="${esc(id)}">${esc(x.name)}</button>`).join('');
+  $('#vendorList').querySelectorAll('[data-v]').forEach(b=>b.onclick=()=>{useVendor(b.dataset.v);showList()});
+}
+document.getElementById('nvSave').onclick=async()=>{
+  const id=$('#nvId').value.trim().toLowerCase(), x={name:$('#nvName').value.trim(),sgCustomer:$('#nvCust').value.trim(),warehouse:$('#nvWh').value.trim(),ship:$('#nvShip').value.trim()};
+  if(!/^[a-z0-9_-]{2,20}$/.test(id)) return toast('代號請用 2～20 個英文小寫或數字');
+  if(VENDORS[id]) return toast('這個代號已經有了');
+  if(!x.name||!x.sgCustomer) return toast('請填名稱和 SG 客戶名稱');
+  await db.collection(C.meta).doc('vendors').set({[id]:x},{merge:true});VENDORS[id]=x;toast('已新增 '+x.name);showVendors();
+};
+// 一次性：把舊的 huimali_* 資料搬到 bkt_*
+async function migrateOnce(){
+  const mref=db.collection(C.meta).doc('migration');
+  if((await mref.get()).exists) return;
+  toast('第一次使用新版，資料搬移中…',8000);
+  const OLD={batches:'huimali_batches',lines:'huimali_lines',state:'huimali_state',ex:'huimali_ex',sgx:'huimali_sgx',items:'huimali_items',out:'huimali_out',codes:'huimali_codes',meta:'huimali_meta'};
+  const ops=[];
+  for(const k of ['batches','lines','state','ex','sgx','items','out','codes','meta']){
+    let qs;try{qs=await db.collection(OLD[k]).get()}catch(e){continue}
+    qs.docs.forEach(d=>{const x=d.data();
+      if(k==='codes') ops.push([db.collection(C.codes).doc('huimali_'+d.id),{...x,v:'huimali'}]);
+      else if(k==='meta'){ if(d.id==='learn')ops.push([db.collection(C.meta).doc('learn'),x]); if(d.id==='outCounter')ops.push([db.collection(C.meta).doc('outCounter_huimali'),x]) }
+      else ops.push([db.collection(C[k]).doc(d.id),['batches','items','out'].includes(k)?{...x,v:x.v||'huimali'}:x]);
+    });
+  }
+  for(let i=0;i<ops.length;i+=400){const b=db.batch();ops.slice(i,i+400).forEach(([r,v])=>b.set(r,v,{merge:true}));await b.commit()}
+  await mref.set({at:Date.now(),by:me(),docs:ops.length});
+}
+
 const ZONE=['#6b7280','#2563eb','#dc2626','#16a34a','#9333ea','#ea580c','#0891b2','#be185d','#65a30d','#92400e'];
 const ST={ok:['✅ 整籃出','st-ok'],part:['🟡 部分出','st-part'],bad:['🔴 不能出','st-bad'],none:['⚪ 無紀錄','st-none'],cancel:['取消','st-cancel']};
 
@@ -249,7 +308,7 @@ addEventListener('online',()=>$('#net').style.display='none');addEventListener('
 const mmdd=d=>String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0');
 const chunk=(a,n)=>{const r=[];for(let i=0;i<a.length;i+=n)r.push(a.slice(i,i+n));return r};
 
-/* ============ 入庫索引：把入庫批次的每一件建成 huimali_items（每件一筆） ============ */
+/* ============ 入庫索引：把入庫批次的每一件建成 bkt_items（每件一筆） ============ */
 async function syncIndex(){
   const qs=await db.collection(C.batches).get();
   const todo=qs.docs.filter(d=>d.data().indexed!==true);
@@ -259,7 +318,7 @@ async function syncIndex(){
     for(const part of chunk(lines,400)){
       const b=db.batch();
       // merge：不覆蓋已出庫的標記
-      part.forEach(l=>b.set(db.collection(C.items).doc(l.id),{uid:l.uid,sku:l.sku,img:l.img,bid:bd.id,box:l.box,qty:l.qty},{merge:true}));
+      part.forEach(l=>b.set(db.collection(C.items).doc(l.id),{v:vOf(bd.data()),uid:l.uid,sku:l.sku,img:l.img,bid:bd.id,box:l.box,qty:l.qty},{merge:true}));
       await b.commit();
     }
     await db.collection(C.batches).doc(bd.id).update({indexed:true});
@@ -299,7 +358,7 @@ async function buildPreview(file){
   const uids=[...new Set(rows.map(r=>r.uid))], byUid={};
   for(const part of chunk(uids,30)){
     const qs=await db.collection(C.items).where('uid','in',part).get();
-    qs.docs.forEach(d=>{const x={id:d.id,...d.data()};(byUid[x.uid]=byUid[x.uid]||[]).push(x)});
+    qs.docs.forEach(d=>{const x={id:d.id,...d.data()};if(vOf(x)!==VID)return;(byUid[x.uid]=byUid[x.uid]||[]).push(x)});
   }
   // 讀需要的入庫進度
   const bids=[...new Set(Object.values(byUid).flat().map(x=>x.bid))], rcv={};
@@ -307,7 +366,7 @@ async function buildPreview(file){
   const got=x=>(rcv[x.bid]||{})[x.id]>0;
   // 7-11 單號是否用過
   const allCodes=[...new Set(orders.flatMap(o=>o.codes))], used={};
-  await Promise.all(allCodes.map(async c=>{const d=await db.collection(C.codes).doc(c).get();if(d.exists)used[c]=d.data()}));
+  await Promise.all(allCodes.map(async c=>{const d=await db.collection(C.codes).doc(VID+'_'+c).get();if(d.exists)used[c]=d.data()}));
   const dispatchIds=new Set(rows.map(r=>r.id));
   // 同一個籃子（同 ID）這次有好幾張單
   const byU={};orders.forEach(o=>(byU[o.uid]=byU[o.uid]||[]).push(o.oid));
@@ -383,16 +442,16 @@ async function generate(){
   PV.orders.forEach((o,i)=>o.no=start+i);
   const d=new Date(), key=mmdd(d);
   // 當天第幾次出庫
-  const cref=db.collection(C.meta).doc('outCounter');
+  const cref=db.collection(C.meta).doc('outCounter_'+VID);
   let seq=1;
   await db.runTransaction(async tx=>{const c=(await tx.get(cref)).data()||{};seq=((c.seq||{})[key]||0)+1;
     tx.set(cref,{last:start+n-1,seq:{[key]:seq},lastAt:Date.now()},{merge:true})});
   const name=`${key}-${seq}`;
   const ref=db.collection(C.out).doc();
-  await ref.set({name,file:PV.file,date:d.toISOString(),seq,start,orders:PV.orders,packed:{},createdAt:FV.serverTimestamp(),createdBy:me()});
+  await ref.set({v:VID,name,file:PV.file,date:d.toISOString(),seq,start,orders:PV.orders,packed:{},createdAt:FV.serverTimestamp(),createdBy:me()});
   // 記錄 7-11 單號、標記已出庫的件
   const ops=[];
-  active.forEach(o=>{o.codes.forEach(c=>ops.push([db.collection(C.codes).doc(c),{outId:ref.id,outName:name,no:o.no,oid:o.oid,at:Date.now()}]));
+  active.forEach(o=>{o.codes.forEach(c=>ops.push([db.collection(C.codes).doc(VID+'_'+c),{v:VID,code:c,outId:ref.id,outName:name,no:o.no,oid:o.oid,at:Date.now()}]));
     o.items.forEach(it=>{if(it.s!=='none')ops.push([db.collection(C.items).doc(it.id),{shipped:true,outId:ref.id,outName:name}])})});
   for(const part of chunk(ops,400)){const b=db.batch();part.forEach(([r,v])=>b.set(r,v,{merge:true}));await b.commit()}
   PV=null;toast('已產生',2500);
@@ -407,7 +466,7 @@ function buildSG(o){
   const aoa=[H];
   o.orders.filter(x=>!x.cancel).forEach(x=>x.items.forEach(it=>{
     const r=new Array(45).fill(null);
-    r[0]=x.no;r[1]='TWD';r[6]='待處理';r[7]=date;r[8]='7-11';r[9]='已付款';r[13]=x.uid;
+    r[0]=x.no;r[1]='TWD';r[6]='待處理';r[7]=date;r[8]=V.ship;r[9]='已付款';r[13]=x.uid;
     r[27]=x.no+'_'+x.name;r[28]=x.name;r[39]='庫存貨品';r[40]=it.sku;r[41]=it.sku;r[42]=0;r[43]=1;r[44]=x.oid;aoa.push(r)}));
   const ws=XLSX.utils.aoa_to_sheet(aoa,{cellDates:true});
   for(let i=2;i<=aoa.length;i++){const c=ws['H'+i];if(c){c.z='yyyy/mm/dd'}}
@@ -429,10 +488,10 @@ function buildMain(o){
   return wb;
 }
 const activeCount=o=>o.orders.filter(x=>!x.cancel).length;
-$('#dlMain').onclick=()=>XLSX.writeFile(buildMain(O),`繪馬梨${O.name}-${activeCount(O)}單.xlsx`);
-$('#dlSG').onclick=()=>{const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,buildSG(O),'工作表SG出');XLSX.writeFile(wb,`繪馬梨${O.name}-${activeCount(O)}單SG出.xlsx`)};
+$('#dlMain').onclick=()=>XLSX.writeFile(buildMain(O),`${V.name}${O.name}-${activeCount(O)}單.xlsx`);
+$('#dlSG').onclick=()=>{const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,buildSG(O),'工作表SG出');XLSX.writeFile(wb,`${V.name}${O.name}-${activeCount(O)}單SG出.xlsx`)};
 $('#printBtn').onclick=()=>{
-  $('#printArea').innerHTML=`<div style="font-size:13px;margin-bottom:4px">繪馬梨出貨單 ${esc(O.name)} ・ ${O.orders.length} 單 ・ 單號 ${O.start}～${O.start+O.orders.length-1}</div>`+
+  $('#printArea').innerHTML=`<div style="font-size:13px;margin-bottom:4px">${esc(V.name)}出貨單 ${esc(O.name)} ・ ${O.orders.length} 單 ・ 單號 ${O.start}～${O.start+O.orders.length-1}</div>`+
   O.orders.map((x,i)=>(i===0||zn(O.orders[i-1].uid)!==zn(x.uid)?`<div style="font-size:15px;font-weight:800;margin:6px 0 3px;border-bottom:2px solid #000">尾數 ${zn(x.uid)} 區</div>`:'')+`<div class="p-order" style="${x.cancel?'opacity:.4':''}">
     <div class="p-head"><span class="p-no">${x.no}</span><span class="p-uid">${esc(x.uid)}</span><span class="p-name">${esc(x.name)}</span>
       ${(x.siblings||[]).length?`<span class="p-flag">${x.mergeInto?'併入單 '+(O.orders.find(y=>y.oid===x.mergeInto)||{}).no+'・託運單不用':'併單主單'}</span>`:''}${x.cancel?'<span class="p-flag">取消</span>':['bad','part'].includes(x.status)?`<span class="p-flag">${ST[x.status][0].replace(/^\S+ /,'')}</span>`:''}
@@ -615,13 +674,16 @@ $('#ckDone').onclick=async()=>{const main=O.orders.find(x=>x.oid===CK),grp=group
 /* ============ 出庫清單 / 開啟 ============ */
 function stopListen(){unsub.forEach(f=>f());unsub=[]}
 async function showList(){
-  stopListen();O=null;PV=null;$('#tabs').style.display='none';$('#backBtn').style.display='none';$('#title').textContent='繪馬梨 出庫';$('#prog').textContent='';
+  stopListen();O=null;PV=null;$('#tabs').style.display='none';$('#backBtn').style.display='none';$('#title').textContent=V.name+' 出庫';$('#prog').textContent='';
   show('list');$('#whoami').innerHTML=`登入：${esc(me())}　<a href="#" id="logout">登出</a>`;$('#logout').onclick=e=>{e.preventDefault();auth.signOut()};
+  $('#toIn').href='./?v='+VID;$('#toVendor').onclick=e=>{e.preventDefault();showVendors()};
   $('#outList').innerHTML='<div class="empty">讀取中…</div>';
   try{
-    const qs=await db.collection(C.out).orderBy('createdAt','desc').limit(30).get();
-    $('#outList').innerHTML=qs.docs.length?qs.docs.map(d=>{const x=d.data(),n=x.orders.filter(o=>!o.cancel).length,p=Object.values(x.packed||{}).filter(Boolean).length;
-      return `<div class="card" data-id="${d.id}" style="cursor:pointer"><div style="display:flex;justify-content:space-between"><b style="font-size:18px">繪馬梨${esc(x.name)}</b><span>打包 ${p}/${n}</span></div>
+    const qs=await db.collection(C.out).where('v','==',VID).get();
+    const ts=x=>x.data().createdAt&&x.data().createdAt.toDate?x.data().createdAt.toDate().getTime():0;
+    const docs=qs.docs.sort((a,b)=>ts(b)-ts(a)).slice(0,30);
+    $('#outList').innerHTML=docs.length?docs.map(d=>{const x=d.data(),n=x.orders.filter(o=>!o.cancel).length,p=Object.values(x.packed||{}).filter(Boolean).length;
+      return `<div class="card" data-id="${d.id}" style="cursor:pointer"><div style="display:flex;justify-content:space-between"><b style="font-size:18px">${esc(V.name)}${esc(x.name)}</b><span>打包 ${p}/${n}</span></div>
       <div class="muted">單號 ${x.start}～${x.start+x.orders.length-1} ・ ${esc(x.createdBy||'')}</div></div>`}).join(''):'<div class="empty">還沒有出庫紀錄</div>';
     $('#outList').querySelectorAll('[data-id]').forEach(el=>el.onclick=()=>openOut(el.dataset.id));
   }catch(e){$('#outList').innerHTML=`<div class="empty">讀取失敗：${esc(e.message)}</div>`}
@@ -634,7 +696,7 @@ async function openOut(id){
 function renderOut(){
   if(!O) return;
   const act=O.orders.filter(o=>!o.cancel), p=act.filter(o=>O.packed[o.oid]).length;
-  $('#title').textContent='繪馬梨'+O.name;$('#prog').textContent=`打包 ${p}/${act.length}`;
+  $('#title').textContent=V.name+O.name;$('#prog').textContent=`打包 ${p}/${act.length}`;
   $('#odSum').innerHTML=sumHtml(O.orders);
   const F=[['all','全部狀態'],['todo','未打包'],['done','已打包'],['bad','🔴 不能出'],['part','🟡 部分出'],['none','⚪ 無紀錄']];
   $('#stSel').innerHTML=F.map(([k,t])=>`<option value="${k}" ${filt===k?'selected':''}>${t}</option>`).join('');
@@ -651,7 +713,7 @@ function renderOut(){
   const merged=act.filter(o=>o.mergeInto);
   $('#fileInfo').textContent=`單號 ${O.start}～${O.start+O.orders.length-1}，出貨 ${act.length} 單${O.orders.length-act.length?`、取消 ${O.orders.length-act.length} 單`:''}。順序跟 BAS 一樣（ID 尾數 → ID）。`+
     (merged.length?`工作表2 中併單的副單（單 ${merged.map(o=>o.no).join('、')}）保留該行、託運單號清空，爬蟲只會印主單的託運單。`:'');
-  const lines=[`【繪馬梨出庫】${O.name}　共 ${act.length} 單`];
+  const lines=[`【${V.name}出庫】${O.name}　共 ${act.length} 單`];
   const bad=act.filter(o=>o.status==='bad'), dup=act.filter(o=>o.dup.length);
   if(bad.length){lines.push('','■ 有件未到貨 / 已出過：');bad.forEach(o=>lines.push(`・${o.no}｜${o.uid} ${o.name}｜`+o.items.filter(i=>i.s==='miss'||i.s==='shipped').map(i=>i.sku+(i.s==='shipped'?'（已出過）':'')).join('、')))}
   if(dup.length){lines.push('','■ 7-11 單號重複：');dup.forEach(o=>lines.push(`・${o.no}｜${o.uid} ${o.name}｜${o.dup.map(d=>d.c).join('、')}`))}
@@ -672,7 +734,7 @@ $('#copyRep').onclick=async()=>{try{await navigator.clipboard.writeText($('#repT
 
 $('#upFile').onchange=async e=>{const f=e.target.files[0];e.target.value='';if(!f)return;
   try{PV=await buildPreview(f);
-    const c=(await db.collection(C.meta).doc('outCounter').get()).data()||{};
+    const c=(await db.collection(C.meta).doc('outCounter_'+VID).get()).data()||{};
     $('#lastNo').textContent=c.last||0;$('#startNo').value=(c.last||0)+1;toast('',1);showPreview();
   }catch(err){toast('讀取失敗：'+err.message,5000)}};
 $('#genBtn').onclick=()=>generate().catch(e=>toast('產生失敗：'+e.message,5000));
@@ -680,7 +742,7 @@ $('#pvCancel').onclick=()=>{PV=null;showList()};
 $('#backBtn').onclick=()=>showList();
 
 function show(tab){
-  ['login','list','preview','orders','files','check'].forEach(t=>$('#v-'+t).style.display=t===tab?'block':'none');
+  ['login','vendor','list','preview','orders','files','check'].forEach(t=>$('#v-'+t).style.display=t===tab?'block':'none');
   $('#tabs').querySelectorAll('button').forEach(b=>b.classList.toggle('on',b.dataset.tab===tab));
 }
 $('#tabs').querySelectorAll('button').forEach(b=>b.onclick=()=>show(b.dataset.tab));
@@ -695,7 +757,8 @@ $('#loginBtn').onclick=async()=>{const p=new firebase.auth.GoogleAuthProvider();
     $('#loginMsg').textContent='登入失敗：'+(e.code||e.message);
   }};
 auth.getRedirectResult().catch(e=>{$('#loginMsg').textContent='登入失敗：'+(e.code||e.message)});
-auth.onAuthStateChanged(u=>{if(!u){stopListen();show('login');return}showList()});
+auth.onAuthStateChanged(u=>{if(!u){stopListen();show('login');return}
+  (async()=>{try{await migrateOnce()}catch(e){console.warn(e)}await loadVendors();const v=vendorFromUrl();if(v){useVendor(v);showList()}else showVendors()})()});
 if(!navigator.onLine) $('#net').style.display='block';
 </script>
 </body>
