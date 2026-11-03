@@ -2,7 +2,7 @@
 <html lang="zh-Hant">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
 <title>繪馬梨 出庫</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
@@ -67,6 +67,17 @@
   .empty{text-align:center;padding:30px 10px;color:var(--mute)}
   pre.rep{white-space:pre-wrap;font-family:inherit;font-size:14px;background:#f9fafb;border-radius:8px;padding:10px;margin:8px 0}
   .exph{width:100%;border-radius:8px;margin-top:6px}
+
+  /* iOS：瀏海、底部橫條、避免雙擊放大與字體自動縮放 */
+  html{-webkit-text-size-adjust:100%}
+  button,.chip,.tile,a{touch-action:manipulation}
+  header{padding-top:calc(10px + env(safe-area-inset-top))!important;padding-left:calc(12px + env(safe-area-inset-left))!important;padding-right:calc(12px + env(safe-area-inset-right))!important}
+  main{padding-bottom:calc(90px + env(safe-area-inset-bottom))!important}
+  .toast{bottom:calc(20px + env(safe-area-inset-bottom))!important}
+  .sheet{padding-bottom:calc(16px + env(safe-area-inset-bottom))!important}
+  #cam .bar{padding-bottom:calc(12px + env(safe-area-inset-bottom))!important}
+  #flash{position:fixed;inset:0;z-index:90;pointer-events:none;opacity:0;transition:opacity .25s}
+  #inapp{display:none;background:#b91c1c;color:#fff;padding:12px;font-size:15px;line-height:1.5}
 </style>
 <style>
   .st{display:inline-block;border-radius:6px;padding:1px 8px;font-size:13px;font-weight:700;color:#fff}
@@ -95,6 +106,8 @@
 </style>
 </head>
 <body>
+<div id="inapp">⚠️ 你正在 LINE（或其他 App）內建的瀏覽器裡，Google 不允許在這裡登入。<br>請點右上角「⋯」→「用預設瀏覽器開啟」（iPhone 選 Safari、Android 選 Chrome）。</div>
+<div id="flash"></div>
 <header>
   <div class="row">
     <button id="backBtn" class="btn gray" style="display:none;padding:4px 10px;font-size:14px">← 出庫</button>
@@ -182,7 +195,10 @@ const firebaseConfig = {
   appId: "1:175590672953:web:6304ddce7b45b191529be8"
 };
 if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
+const IS_IOS=/iP(hone|ad|od)/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
+const IN_APP=/Line\/|FBAN|FBAV|Instagram|MicroMessenger/i.test(navigator.userAgent);
 const auth=firebase.auth(), db=firebase.firestore();
+if(IN_APP) document.getElementById('inapp').style.display='block';
 db.enablePersistence({synchronizeTabs:true}).catch(()=>{});
 const FV=firebase.firestore.FieldValue, FP=firebase.firestore.FieldPath;
 const C={batches:'huimali_batches',lines:'huimali_lines',state:'huimali_state',items:'huimali_items',out:'huimali_out',codes:'huimali_codes',meta:'huimali_meta'};
@@ -444,7 +460,14 @@ function show(tab){
 $('#tabs').querySelectorAll('button').forEach(b=>b.onclick=()=>show(b.dataset.tab));
 
 $('#loginBtn').onclick=async()=>{const p=new firebase.auth.GoogleAuthProvider();
-  try{await auth.signInWithPopup(p)}catch(e){if(['auth/popup-blocked','auth/operation-not-supported-in-this-environment','auth/cancelled-popup-request'].includes(e.code))return auth.signInWithRedirect(p);$('#loginMsg').textContent='登入失敗：'+(e.code||e.message)}};
+  try{await auth.signInWithPopup(p)}
+  catch(e){
+    // iPhone Safari 會擋跨網域的「重新導向登入」，所以只用彈出視窗
+    if(e.code==='auth/popup-blocked') return $('#loginMsg').textContent='彈出視窗被擋住了：iPhone 請到「設定 → Safari」關閉「阻擋彈出式視窗」，再按一次登入';
+    if(e.code==='auth/popup-closed-by-user'||e.code==='auth/cancelled-popup-request') return;
+    if(!IS_IOS&&e.code==='auth/operation-not-supported-in-this-environment') return auth.signInWithRedirect(p);
+    $('#loginMsg').textContent='登入失敗：'+(e.code||e.message);
+  }};
 auth.getRedirectResult().catch(e=>{$('#loginMsg').textContent='登入失敗：'+(e.code||e.message)});
 auth.onAuthStateChanged(u=>{if(!u){stopListen();show('login');return}showList()});
 if(!navigator.onLine) $('#net').style.display='block';
