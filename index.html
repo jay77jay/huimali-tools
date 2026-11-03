@@ -76,6 +76,8 @@
   .toast{bottom:calc(20px + env(safe-area-inset-bottom))!important}
   .sheet{padding-bottom:calc(16px + env(safe-area-inset-bottom))!important}
   #cam .bar{padding-bottom:calc(12px + env(safe-area-inset-bottom))!important}
+  .fsel{flex:1;min-width:0;padding:10px 6px;font-size:16px;border-radius:10px;border:1px solid var(--line);background:#fff;color:var(--ink)}
+  .fsel.on{border-color:var(--pri);background:#eff6ff;font-weight:700}
   #flash{position:fixed;inset:0;z-index:90;pointer-events:none;opacity:0;transition:opacity .25s}
   #inapp{display:none;background:#b91c1c;color:#fff;padding:12px;font-size:15px;line-height:1.5}
 </style>
@@ -132,9 +134,12 @@
       <div class="muted" id="scanHint" style="margin-top:6px">grail 吊牌直接掃條碼；zozo 輸入標籤 [ ] 裡的號碼（或後六碼）；palcloset 輸入 NO.；dot-st / GU 輸入吊牌上的編號。按「123」切換數字鍵盤。</div>
     </div>
     <div class="chips" id="boxChips"></div>
-    <div class="chips" id="jpChips"></div>
-    <div class="chips" id="sizeChips"></div>
-    <div class="chips" id="colorChips"></div>
+    <div id="filters" style="display:flex;gap:6px;margin:0 0 6px">
+      <select id="jpSel" class="fsel"></select>
+      <select id="sizeSel" class="fsel"></select>
+      <select id="colorSel" class="fsel"></select>
+      <button class="btn gray" id="clrF" style="padding:6px 10px;font-size:14px;flex:none">清除</button>
+    </div>
     <div class="muted" id="gridInfo" style="margin:2px 0 8px"></div>
     <div class="grid" id="grid"></div>
   </section>
@@ -469,6 +474,10 @@ function confirmTile(l){
 }
 
 /* ================= 畫面 ================= */
+$('#jpSel').onchange=e=>{curJp=e.target.value;curSize='ALL';curColor='ALL';render()};
+$('#sizeSel').onchange=e=>{curSize=e.target.value;curColor='ALL';render()};
+$('#colorSel').onchange=e=>{curColor=e.target.value;render()};
+$('#clrF').onclick=()=>{curJp='ALL';curSize='ALL';curColor='ALL';render()};
 function render(){
   if(!S) return;
   const {t,d}=totals();
@@ -482,23 +491,27 @@ function render(){
   $('#boxChips').querySelectorAll('.chip').forEach(c=>c.onclick=()=>{curBox=bx.length===1?'ALL':c.dataset.b;curJp='ALL';curSize='ALL';curColor='ALL';query='';render()});
   let open=S.lines.filter(l=>rem(l)>0&&(curBox==='ALL'||l.box===curBox));
   if(query){const q=query.normalize('NFKC').toLowerCase();open=open.filter(l=>l.sku.normalize('NFKC').toLowerCase().includes(q)||l.name.toLowerCase().includes(q)||l.uid.includes(q))}
+  // 篩選改成下拉選單（日本單號 / 尺寸 / 顏色），iPhone 會跳出滾輪選擇
+  const fill=(sel,all,list,cur,label)=>{const el=$(sel);
+    if(list.length<2){el.style.display='none';return}
+    el.style.display='';el.className='fsel'+(cur!=='ALL'?' on':'');
+    el.innerHTML=`<option value="ALL">${all}</option>`+list.map(([v,n])=>`<option value="${esc(v)}" ${cur===v?'selected':''}>${esc(label(v))}（${n}）</option>`).join('')};
   const jps={};open.forEach(l=>jps[l.jp]=(jps[l.jp]||0)+rem(l));
   const jk=Object.keys(jps).sort((a,b)=>jps[b]-jps[a]);
   if(curJp!=='ALL'&&!jk.includes(curJp)) curJp='ALL';
-  $('#jpChips').innerHTML=((curBox!=='ALL'||bx.length===1)&&jk.length>1&&!query)?['ALL',...jk].map(j=>`<button class="chip ${curJp===j?'on':''}" data-j="${esc(j)}">${j==='ALL'?'全部日本單號':'日本 '+esc(j)+' ・ '+jps[j]}</button>`).join(''):'';
-  $('#jpChips').querySelectorAll('.chip').forEach(c=>c.onclick=()=>{curJp=c.dataset.j;curSize='ALL';curColor='ALL';render()});
+  fill('#jpSel','日本單號',(query?[]:jk.map(j=>[j,jps[j]])),curJp,j=>j);
   if(curJp!=='ALL') open=open.filter(l=>l.jp===curJp);
-  const sizes=[...new Set(open.map(l=>l.sk))].sort();
+  const sc={};open.forEach(l=>sc[l.sk]=(sc[l.sk]||0)+1);
+  const sizes=Object.keys(sc).sort();
   if(curSize!=='ALL'&&!sizes.includes(curSize)) curSize='ALL';
-  $('#sizeChips').innerHTML=sizes.length>1?['ALL',...sizes].map(s=>`<button class="chip ${curSize===s?'on':''}" data-s="${esc(s)}">${s==='ALL'?'全部尺寸':esc(s)+' '+open.filter(l=>l.sk===s).length}</button>`).join(''):'';
-  $('#sizeChips').querySelectorAll('.chip').forEach(c=>c.onclick=()=>{curSize=c.dataset.s;curColor='ALL';render()});
+  fill('#sizeSel','尺寸',sizes.map(x=>[x,sc[x]]),curSize,x=>x);
   if(curSize!=='ALL') open=open.filter(l=>l.sk===curSize);
   const cc={};open.forEach(l=>cc[l.color]=(cc[l.color]||0)+1);
   const colors=Object.keys(cc).sort((a,b)=>cc[b]-cc[a]);
   if(curColor!=='ALL'&&!colors.includes(curColor)) curColor='ALL';
-  $('#colorChips').innerHTML=(colors.length>1&&open.length>6)?['ALL',...colors].map(c=>`<button class="chip ${curColor===c?'on':''}" data-c="${esc(c)}">${c==='ALL'?'全部顏色':esc(c)+' '+cc[c]}</button>`).join(''):'';
-  $('#colorChips').querySelectorAll('.chip').forEach(c=>c.onclick=()=>{curColor=c.dataset.c;render()});
+  fill('#colorSel','顏色',colors.map(c=>[c,cc[c]]),curColor,c=>c);
   if(curColor!=='ALL') open=open.filter(l=>l.color===curColor);
+  $('#clrF').style.display=(curJp!=='ALL'||curSize!=='ALL'||curColor!=='ALL')?'':'none';
   $('#gridInfo').innerHTML=(query?`搜尋「${esc(query)}」 <a href="#" id="clrQ">清除</a> ・ `:'')+`還沒配到 ${open.length} 行，點圖片配籃`;
   if(query) $('#clrQ').onclick=e=>{e.preventDefault();query='';render()};
   const shown=open.slice(0,120);
