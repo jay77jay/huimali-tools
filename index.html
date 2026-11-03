@@ -138,6 +138,7 @@
 
   <!-- 配籃 -->
   <section id="v-match" style="display:none">
+    <div id="dupBar"></div>
     <div id="priorBar"></div>
     <div id="result"></div>
     <div class="card">
@@ -595,7 +596,19 @@ function render(){
   $('#grid').querySelectorAll('.tile').forEach(el=>el.onclick=()=>confirmTile(shown[+el.dataset.i]));
   const pk=S.prior?Object.keys(S.prior).filter(u=>S.lines.some(l=>l.uid===u)):[];
   $('#priorBar').innerHTML=pk.length?`<div class="card" style="background:#fef9c3;padding:10px">🧺 這批有 <b>${pk.length}</b> 位客人已經有舊籃：${pk.map(esc).join('、')}。配到他們的衣服時，放進舊籃，不用另外貼新標籤。</div>`:'';
+  // 兩支手機幾乎同時配到「同款商品」時，可能配到同一行 → 超過數量就警告
+  const over=S.lines.filter(l=>(S.rcv[l.id]||0)>l.qty);
+  $('#dupBar').innerHTML=over.length?`<div class="card" style="background:#fee2e2;padding:10px;font-size:15px">⚠️ <b>可能重複配籃</b>（兩支手機同時配到同款）：<br>${over.map(l=>{const sib=S.lines.filter(x=>x.sku===l.sku&&x.id!==l.id&&rem(x)>0);
+    return `・${esc(l.sku)}：籃 <b>${esc(l.uid)}</b> 只要 ${l.qty} 件卻配了 ${S.rcv[l.id]} 件${sib.length?`，籃 <b>${sib.map(x=>esc(x.uid)).join('、')}</b> 還缺 → 把多的一件移過去`:''}`}).join('<br>')}
+    <br><button class="btn gray" style="margin-top:6px;padding:6px 10px;font-size:14px" onclick="fixOver()">已移好，修正紀錄</button></div>`:'';
   renderBaskets();renderReport();
+}
+async function fixOver(){
+  const over=S.lines.filter(l=>(S.rcv[l.id]||0)>l.qty), b=db.batch(), st=db.collection(C.state).doc(S.id);let n=0;
+  over.forEach(l=>{let extra=S.rcv[l.id]-l.qty;
+    S.lines.filter(x=>x.sku===l.sku&&x.id!==l.id&&rem(x)>0).forEach(x=>{const k=Math.min(extra,rem(x));if(k>0){b.update(st,new FP('rcv',x.id),FV.increment(k));extra-=k;n+=k}});
+    b.update(st,new FP('rcv',l.id),FV.increment(-(S.rcv[l.id]-l.qty)))});
+  await b.commit().catch(e=>toast(e.message));toast(n?`已修正 ${n} 件`:'已修正');
 }
 function renderBaskets(){
   const by={};
