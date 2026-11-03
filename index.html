@@ -86,6 +86,9 @@
     .lb .i{font-size:20pt;font-weight:800;white-space:nowrap} .lb .n{font-size:15pt;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
     @page{size:A4;margin:0}
   }
+  .zone{display:inline-block;background:rgba(0,0,0,.25);border-radius:8px;padding:2px 12px;font-size:22px;font-weight:800;margin-bottom:2px}
+  .zh{font-size:18px;font-weight:800;margin:14px 2px 6px;display:flex;align-items:center;gap:8px}
+  .zh i{display:inline-block;width:14px;height:14px;border-radius:4px}
   #flash{position:fixed;inset:0;z-index:90;pointer-events:none;opacity:0;transition:opacity .25s}
   #inapp{display:none;background:#b91c1c;color:#fff;padding:12px;font-size:15px;line-height:1.5}
 </style>
@@ -244,6 +247,7 @@ let curJp='ALL',curBox='ALL',curSize='ALL',curColor='ALL',query='',bFilter='all'
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const zc=uid=>ZONE[+String(uid).slice(-1)||0];
+const zn=uid=>String(uid).slice(-1);   // ID 尾數＝現場的區
 const me=()=>auth.currentUser?(auth.currentUser.displayName||auth.currentUser.email):'';
 function toast(m,ms=2200){const t=$('#toast');t.textContent=m;t.style.display='block';clearTimeout(t._h);t._h=setTimeout(()=>t.style.display='none',ms)}
 function close(sel){$(sel).classList.remove('on')}
@@ -464,7 +468,7 @@ function assign(l,{same=0}={}){
   const bt=bl.reduce((a,x)=>a+x.qty,0), bdn=bl.reduce((a,x)=>a+Math.min(x.qty,S.rcv[x.id]||0),0);
   const r=$('#result');
   r.className='';r.style.display='block';r.style.background=zc(l.uid);
-  r.innerHTML=`<div class="uid">${esc(l.uid)}</div><div class="nm">${esc(l.name||'（無名稱）')}</div>
+  r.innerHTML=`<div class="zone">尾數 ${zn(l.uid)} 區</div><div class="uid">${esc(l.uid)}</div><div class="nm">${esc(l.name||'（無名稱）')}</div>
     <div class="meta">${esc(l.sku)}<br>${esc(l.box)} ・ 這籃 ${bdn}/${bt}${bdn===bt?' ✅ 已齊':''}${same>0?` ・ <b>同款還有 ${same} 件給別人</b>`:''}</div>
     ${priorNote(l.uid)}
     <div class="acts"><button class="btn gray" onclick="undo()">↩ 復原</button></div>`;
@@ -515,7 +519,7 @@ function confirmTile(l){
   b.innerHTML=`<img src="${esc(l.img)}" style="width:100%;max-height:45vh;object-fit:contain;border-radius:10px;background:#eee">
     <div style="margin-top:8px;word-break:break-all">${esc(l.sku)}　<b>${esc(l.size)}</b></div>
     <div style="margin-top:10px;padding:14px;border-radius:12px;color:#fff;text-align:center;background:${zc(l.uid)}">
-      <div style="font-size:44px;font-weight:800">${esc(l.uid)}</div><div style="font-size:22px">${esc(l.name)}</div>${priorNote(l.uid)}</div>
+      <div class="zone" style="font-size:18px">尾數 ${zn(l.uid)} 區</div><div style="font-size:44px;font-weight:800">${esc(l.uid)}</div><div style="font-size:22px">${esc(l.name)}</div>${priorNote(l.uid)}</div>
     ${pendingBarcode?`<div class="muted" style="margin-top:6px">會記住條碼 ${esc(pendingBarcode)} = 這件</div>`:''}
     <div class="row"><button class="btn gray" id="cfNo">取消</button><button class="btn ok" id="cfYes">放進這籃</button></div>`;
   $('#cfNo').onclick=()=>close('#mPick');
@@ -564,6 +568,7 @@ function render(){
   $('#clrF').style.display=(curJp!=='ALL'||curSize!=='ALL'||curColor!=='ALL')?'':'none';
   $('#gridInfo').innerHTML=(query?`搜尋「${esc(query)}」 <a href="#" id="clrQ">清除</a> ・ `:'')+`還沒配到 ${open.length} 行，點圖片配籃`;
   if(query) $('#clrQ').onclick=e=>{e.preventDefault();query='';render()};
+  open.sort((a,b)=>(zn(a.uid)-zn(b.uid))||(+a.uid-+b.uid));
   const shown=open.slice(0,120);
   $('#grid').innerHTML=open.length?shown.map((l,i)=>`<div class="tile" data-i="${i}">
       <img src="${esc(l.img)}" loading="lazy" onerror="this.style.opacity=.2">
@@ -583,12 +588,13 @@ function renderBaskets(){
   let arr=Object.values(by).sort((a,b)=>(a.uid.slice(-1)-b.uid.slice(-1))||(+a.uid-+b.uid));
   arr.forEach(b=>{b.t=b.ls.reduce((a,l)=>a+l.qty,0);b.d=b.ls.reduce((a,l)=>a+Math.min(l.qty,S.rcv[l.id]||0),0)});
   if(bFilter==='full') arr=arr.filter(b=>b.d===b.t); if(bFilter==='part') arr=arr.filter(b=>b.d<b.t);
-  $('#basketList').innerHTML=arr.map(b=>`<div class="card basket" style="border-left-color:${zc(b.uid)}">
+  let lastZ=null;
+  $('#basketList').innerHTML=arr.map(b=>{const z=zn(b.uid),head=z!==lastZ?`<div class="zh"><i style="background:${zc(b.uid)}"></i>尾數 ${z} 區（${arr.filter(x=>zn(x.uid)===z).length} 籃）</div>`:'';lastZ=z;return head+`<div class="card basket" style="border-left-color:${zc(b.uid)}">
     <h3>${esc(b.uid)} <span style="font-size:17px">${esc(b.name)}</span> <span class="muted" style="float:right">${b.d}/${b.t} ${b.d===b.t?'✅':''}</span></h3>
     ${S.prior&&S.prior[b.uid]?`<div class="keep">🧺 已有舊籃：之前的批次還有 ${S.prior[b.uid].n} 件在籃內（${[...S.prior[b.uid].boxes].map(esc).join('、')}），不用另開新籃</div>`:''}
     <div class="list">${b.ls.map(l=>`<div class="it"><img src="${esc(l.img)}" loading="lazy" onerror="this.style.visibility='hidden'">
       <div class="tx">${esc(l.sku)}<br><span class="muted">${esc(l.box)}${l.st&&l.st!=='onFlight'?' ・ 狀態 '+esc(l.st):''}</span></div>
-      <div>${rem(l)<=0?'✅':`<span style="color:var(--bad)">缺 ${rem(l)}</span>`}</div></div>`).join('')}</div></div>`).join('')||'<div class="empty">沒有符合的籃子</div>';
+      <div>${rem(l)<=0?'✅':`<span style="color:var(--bad)">缺 ${rem(l)}</span>`}</div></div>`).join('')}</div></div>`}).join('')||'<div class="empty">沒有符合的籃子</div>';
 }
 function renderReport(){
   if(!S) return;

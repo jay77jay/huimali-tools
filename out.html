@@ -76,6 +76,8 @@
   .toast{bottom:calc(20px + env(safe-area-inset-bottom))!important}
   .sheet{padding-bottom:calc(16px + env(safe-area-inset-bottom))!important}
   #cam .bar{padding-bottom:calc(12px + env(safe-area-inset-bottom))!important}
+  .zh{font-size:18px;font-weight:800;margin:14px 2px 6px;display:flex;align-items:center;gap:8px}
+  .zh i{display:inline-block;width:14px;height:14px;border-radius:4px}
   #flash{position:fixed;inset:0;z-index:90;pointer-events:none;opacity:0;transition:opacity .25s}
   #inapp{display:none;background:#b91c1c;color:#fff;padding:12px;font-size:15px;line-height:1.5}
 </style>
@@ -160,7 +162,10 @@
     <div class="card" style="margin-top:10px">
       <div class="scanrow"><input type="text" id="find" placeholder="輸入籃子 ID 或單號，按 Enter 開始核對" inputmode="numeric" autocomplete="off" enterkeyhint="search"></div>
     </div>
-    <div class="chips" id="odFilter"></div>
+    <div style="display:flex;gap:6px;margin-bottom:6px">
+      <select id="zoneSel" class="fsel" style="flex:1;padding:10px 6px;font-size:16px;border-radius:10px;border:1px solid var(--line);background:#fff"></select>
+      <select id="stSel" class="fsel" style="flex:1;padding:10px 6px;font-size:16px;border-radius:10px;border:1px solid var(--line);background:#fff"></select>
+    </div>
     <div id="odList"></div>
   </section>
 
@@ -227,10 +232,11 @@ const ST={ok:['✅ 整籃出','st-ok'],part:['🟡 部分出','st-part'],bad:['�
 
 let O=null;          // 目前出庫 {id,..., orders}
 let PV=null;         // 預覽中的出庫
-let unsub=[], filt='all';
+let unsub=[], filt='all', zf='ALL';
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const zc=uid=>ZONE[+String(uid).slice(-1)||0];
+const zn=uid=>String(uid).slice(-1);   // ID 尾數＝現場的區
 const me=()=>auth.currentUser?(auth.currentUser.displayName||auth.currentUser.email):'';
 function toast(m,ms=2200){const t=$('#toast');t.textContent=m;t.style.display='block';clearTimeout(t._h);t._h=setTimeout(()=>t.style.display='none',ms)}
 function close(sel){$(sel).classList.remove('on')}
@@ -354,13 +360,15 @@ function mergeNote(o){
     ?`<div class="warnbox" style="margin:6px 0 0;background:#e0e7ff">📦 <b>併單</b>：這張的衣服跟 ${no(main)} 裝同一包，用那張的託運單 <b>${esc(main.codes[0]||'')}</b>，這張的託運單不用貼</div>`
     :`<div class="warnbox" style="margin:6px 0 0;background:#e0e7ff">📦 <b>併單（主單）</b>：${subs.map(no).join('、')} 的衣服也裝進這一包，貼這張的託運單 <b>${esc(o.codes[0]||'')}</b></div>`;
 }
+// 依 ID 尾數分區加標題（訂單本來就照尾數排序）
+function withZones(list,card){let last=null;return list.map(o=>{const z=zn(o.uid),h=z!==last?`<div class="zh"><i style="background:${zc(o.uid)}"></i>尾數 ${z} 區（${list.filter(x=>zn(x.uid)===z).length} 單）</div>`:'';last=z;return h+card(o)}).join('')}
 function showPreview(){
   show('preview');$('#tabs').style.display='none';$('#backBtn').style.display='inline-block';
   $('#title').textContent='出庫預覽';$('#prog').textContent=`${PV.orders.length} 單 / ${PV.rows.length} 件`;
   const dups=PV.orders.filter(o=>o.dup.length&&!o.cancel);
   $('#pvWarn').innerHTML=dups.length?`<div class="warnbox">⚠️ 有 ${dups.length} 張單的 7-11 單號之前已經用過，爬蟲可能印不出來，請確認是否要取消。</div>`:'';
   $('#pvSum').innerHTML=sumHtml(PV.orders);
-  $('#pvOrders').innerHTML=PV.orders.map(o=>orderCard(o,{preview:true})).join('');
+  $('#pvOrders').innerHTML=withZones(PV.orders,o=>orderCard(o,{preview:true}));
   $('#pvOrders').querySelectorAll('[data-act=cancel]').forEach(b=>b.onclick=()=>{const o=PV.orders.find(x=>x.oid===b.closest('.order').dataset.oid);o.cancel=!o.cancel;showPreview()});
 }
 
@@ -422,7 +430,7 @@ $('#dlMain').onclick=()=>XLSX.writeFile(buildMain(O),`繪馬梨${O.name}-${activ
 $('#dlSG').onclick=()=>{const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,buildSG(O),'工作表SG出');XLSX.writeFile(wb,`繪馬梨${O.name}-${activeCount(O)}單SG出.xlsx`)};
 $('#printBtn').onclick=()=>{
   $('#printArea').innerHTML=`<div style="font-size:13px;margin-bottom:4px">繪馬梨出貨單 ${esc(O.name)} ・ ${O.orders.length} 單 ・ 單號 ${O.start}～${O.start+O.orders.length-1}</div>`+
-  O.orders.map(x=>`<div class="p-order" style="${x.cancel?'opacity:.4':''}">
+  O.orders.map((x,i)=>(i===0||zn(O.orders[i-1].uid)!==zn(x.uid)?`<div style="font-size:15px;font-weight:800;margin:6px 0 3px;border-bottom:2px solid #000">尾數 ${zn(x.uid)} 區</div>`:'')+`<div class="p-order" style="${x.cancel?'opacity:.4':''}">
     <div class="p-head"><span class="p-no">${x.no}</span><span class="p-uid">${esc(x.uid)}</span><span class="p-name">${esc(x.name)}</span>
       ${(x.siblings||[]).length?`<span class="p-flag">${x.mergeInto?'併入單 '+(O.orders.find(y=>y.oid===x.mergeInto)||{}).no+'・託運單不用':'併單主單'}</span>`:''}${x.cancel?'<span class="p-flag">取消</span>':['bad','part'].includes(x.status)?`<span class="p-flag">${ST[x.status][0].replace(/^\S+ /,'')}</span>`:''}
       <span class="p-code">${x.codes.map(esc).join('<br>')}</span></div>
@@ -532,6 +540,7 @@ function renderCheck(){
   const items=grp.flatMap(o=>o.items.map(it=>({it,o})));
   const done=items.filter(x=>chk[x.it.id]).length;
   $('#ckHead').innerHTML=`<div class="card order" style="border-left-color:${zc(main.uid)}">
+    <div class="muted" style="font-size:16px;font-weight:700;color:${zc(main.uid)}">尾數 ${zn(main.uid)} 區</div>
     <div><span class="no">${main.no}</span><b style="font-size:26px">${esc(main.uid)}</b>&nbsp;${esc(main.name)}</div>
     <div class="muted">${grp.length>1?`併單：單 ${grp.map(x=>x.no).join(' + ')} ・ `:''}託運單 ${esc(main.codes[0]||'')}</div>
     <div style="font-size:22px;font-weight:800;margin-top:4px;color:${done===items.length?'var(--ok)':'var(--ink)'}">已核對 ${done} / ${items.length}</div></div>`;
@@ -597,14 +606,16 @@ function renderOut(){
   const act=O.orders.filter(o=>!o.cancel), p=act.filter(o=>O.packed[o.oid]).length;
   $('#title').textContent='繪馬梨'+O.name;$('#prog').textContent=`打包 ${p}/${act.length}`;
   $('#odSum').innerHTML=sumHtml(O.orders);
-  const F=[['all','全部'],['todo','未打包'],['bad','🔴'],['part','🟡'],['none','⚪'],['done','已打包']];
-  $('#odFilter').innerHTML=F.map(([k,t])=>`<button class="chip ${filt===k?'on':''}" data-f="${k}">${t}</button>`).join('');
-  $('#odFilter').querySelectorAll('.chip').forEach(c=>c.onclick=()=>{filt=c.dataset.f;renderOut()});
+  const F=[['all','全部狀態'],['todo','未打包'],['done','已打包'],['bad','🔴 不能出'],['part','🟡 部分出'],['none','⚪ 無紀錄']];
+  $('#stSel').innerHTML=F.map(([k,t])=>`<option value="${k}" ${filt===k?'selected':''}>${t}</option>`).join('');
+  const zones=[...new Set(O.orders.map(o=>zn(o.uid)))].sort();
+  $('#zoneSel').innerHTML=`<option value="ALL">全部區</option>`+zones.map(z=>{const ls=O.orders.filter(o=>zn(o.uid)===z&&!o.cancel),d=ls.filter(o=>O.packed[o.oid]).length;
+    return `<option value="${z}" ${zf===z?'selected':''}>尾數 ${z} 區（${d}/${ls.length}）</option>`}).join('');
   const q=$('#find').value.trim();
   let list=O.orders;
   if(q) list=list.filter(o=>o.uid===q||o.oid===q||String(o.no)===q||o.uid.endsWith(q));
-  else list=list.filter(o=>filt==='all'||(filt==='todo'&&!o.cancel&&!O.packed[o.oid])||(filt==='done'&&O.packed[o.oid])||o.status===filt);
-  $('#odList').innerHTML=list.map(o=>orderCard(o,{packed:!!O.packed[o.oid]})).join('')||'<div class="empty">沒有符合的單</div>';
+  else list=list.filter(o=>(zf==='ALL'||zn(o.uid)===zf)&&(filt==='all'||(filt==='todo'&&!o.cancel&&!O.packed[o.oid])||(filt==='done'&&O.packed[o.oid])||o.status===filt));
+  $('#odList').innerHTML=withZones(list,o=>orderCard(o,{packed:!!O.packed[o.oid]}))||'<div class="empty">沒有符合的單</div>';
   $('#odList').querySelectorAll('[data-act=check]').forEach(b=>b.onclick=()=>openCheck(b.closest('.order').dataset.oid));
   if(CK&&$('#v-check').style.display==='block') renderCheck();
   const merged=act.filter(o=>o.mergeInto);
@@ -623,6 +634,8 @@ function renderOut(){
   $('#repText').textContent=lines.join('\n');
 }
 $('#find').addEventListener('input',()=>renderOut());
+$('#stSel').onchange=e=>{filt=e.target.value;renderOut()};
+$('#zoneSel').onchange=e=>{zf=e.target.value;renderOut()};
 $('#find').addEventListener('keydown',e=>{if(e.key!=='Enter')return;const q=$('#find').value.trim();
   const hit=[...new Set(O.orders.filter(o=>!o.cancel&&(o.uid===q||String(o.no)===q||o.oid===q)).map(o=>o.mergeInto||o.oid))];if(hit.length===1)openCheck(hit[0])});
 $('#copyRep').onclick=async()=>{try{await navigator.clipboard.writeText($('#repText').textContent);toast('已複製')}catch(e){toast('複製失敗，請長按手動複製')}};
