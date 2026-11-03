@@ -280,6 +280,8 @@ async function buildPreview(file){
   const allCodes=[...new Set(orders.flatMap(o=>o.codes))], used={};
   await Promise.all(allCodes.map(async c=>{const d=await db.collection(C.codes).doc(c).get();if(d.exists)used[c]=d.data()}));
   const dispatchIds=new Set(rows.map(r=>r.id));
+  // 同一個籃子（同 ID）這次有好幾張單
+  const byU={};orders.forEach(o=>(byU[o.uid]=byU[o.uid]||[]).push(o.oid));
   for(const o of orders){
     const idx={};(byUid[o.uid]||[]).forEach(x=>idx[x.id]=x);
     let found=0,miss=0,shipped=0;
@@ -291,6 +293,7 @@ async function buildPreview(file){
     o.keep=(byUid[o.uid]||[]).filter(x=>!dispatchIds.has(x.id)&&!x.shipped&&got(x)).map(x=>({id:x.id,sku:x.sku,img:x.img,box:x.box}));
     o.notYet=(byUid[o.uid]||[]).filter(x=>!dispatchIds.has(x.id)&&!x.shipped&&!got(x)).length;
     o.dup=o.codes.filter(c=>used[c]).map(c=>({c,...used[c]}));
+    o.siblings=byU[o.uid].filter(x=>x!==o.oid);
     o.status=!found?'none':(miss||shipped)?'bad':o.keep.length?'part':'ok';
     o.partial=found&&found<o.items.length;   // 有幾件是舊流程入庫
   }
@@ -311,6 +314,7 @@ function orderCard(o,{preview=false,packed=false}={}){
       <span style="margin-left:auto"><span class="st ${ST[s][1]}">${ST[s][0]}</span>${packed?' <span class="st st-ok">已打包</span>':''}</span></div>
     <div class="muted">單號 ${esc(o.oid)} ・ ${o.items.length} 件${o.partial?' ・ 部分為舊流程入庫':''}${o.notYet?` ・ 籃內還有 ${o.notYet} 件未到貨`:''}</div>
     <div>${o.codes.map(c=>`<span class="codes">${esc(c)}</span>`).join('')}</div>
+    ${(o.siblings||[]).length?`<div class="warnbox" style="margin:6px 0 0;background:#e0e7ff">📦 同一籃還有另一張單（單號 ${o.siblings.map(esc).join('、')}），兩張分開包</div>`:''}
     ${o.dup.length?`<div class="warnbox" style="margin:6px 0 0">⚠️ 7-11 單號已經用過：${o.dup.map(d=>`${esc(d.c)}（${esc(d.outName||'')} 單 ${esc(d.no??'')}）`).join('、')}</div>`:''}
     <div class="list" style="margin-top:4px">${o.items.map(it=>`<div class="it"><img src="${esc(it.img)}" loading="lazy" onerror="this.style.visibility='hidden'">
       <div class="tx">${esc(it.sku)} ${itemTag(it)}${it.box?`<br><span class="muted">${esc(it.box)}</span>`:''}</div></div>`).join('')}</div>
@@ -390,7 +394,7 @@ $('#printBtn').onclick=()=>{
   $('#printArea').innerHTML=`<div style="font-size:13px;margin-bottom:4px">繪馬梨出貨單 ${esc(O.name)} ・ ${O.orders.length} 單 ・ 單號 ${O.start}～${O.start+O.orders.length-1}</div>`+
   O.orders.map(x=>`<div class="p-order" style="${x.cancel?'opacity:.4':''}">
     <div class="p-head"><span class="p-no">${x.no}</span><span class="p-uid">${esc(x.uid)}</span><span class="p-name">${esc(x.name)}</span>
-      ${x.cancel?'<span class="p-flag">取消</span>':x.status!=='ok'?`<span class="p-flag">${ST[x.status][0].replace(/^\S+ /,'')}</span>`:''}
+      ${(x.siblings||[]).length?'<span class="p-flag">同籃 2 單</span>':''}${x.cancel?'<span class="p-flag">取消</span>':x.status!=='ok'?`<span class="p-flag">${ST[x.status][0].replace(/^\S+ /,'')}</span>`:''}
       <span class="p-code">${x.codes.map(esc).join('<br>')}</span></div>
     ${x.items.map(it=>`<div class="p-it"><img src="${esc(it.img)}" onerror="this.style.visibility='hidden'"><span>☐ ${esc(it.sku)}</span>${it.s==='miss'?'<span class="p-flag">未到貨</span>':it.s==='shipped'?'<span class="p-flag">已出過</span>':''}</div>`).join('')}
     ${x.keep.length?`<div class="p-keep"><b>留籃：</b>${x.keep.map(k=>esc(k.sku)).join('　')}</div>`:''}</div>`).join('');
