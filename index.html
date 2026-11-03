@@ -357,8 +357,15 @@ const boxes=()=>[...new Set(S.lines.map(l=>l.box))];
 function totals(){let t=0,d=0;for(const l of S.lines){t+=l.qty;d+=Math.min(l.qty,S.rcv[l.id]||0)}return{t,d}}
 const tok=l=>(l.sku.normalize('NFKC').match(/^[A-Za-z0-9\-]+/)||[''])[0].toUpperCase();
 
+// 整理輸入：iPhone 鍵盤「掃描文字」會帶進整段文字，從裡面抓出編號
+function normCode(raw){
+  const s=String(raw).normalize('NFKC');
+  let m=s.match(/\[\s*([0-9]{6,9})\s*\]?/); if(m) return m[1];                 // zozo 標籤 [109541953]
+  m=s.toUpperCase().match(/[A-Z]{3}\d{7}[A-Z]\d{4}/); if(m) return m[0];          // palcloset NO.
+  return s.replace(/\*/g,'').replace(/\s+/g,'').toUpperCase();
+}
 function onScan(raw){
-  const code=String(raw).replace(/\*/g,'').trim().toUpperCase();
+  const code=normCode(raw);
   if(!code) return;
   $('#scan').value='';
   // 1) grail 吊牌：PRODUCT-COLOR-SIZE

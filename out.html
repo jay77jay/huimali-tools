@@ -158,10 +158,27 @@
   <section id="v-orders" style="display:none">
     <div class="sum" id="odSum"></div>
     <div class="card" style="margin-top:10px">
-      <div class="scanrow"><input type="text" id="find" placeholder="輸入籃子 ID 或單號" inputmode="numeric" autocomplete="off" enterkeyhint="search"></div>
+      <div class="scanrow"><input type="text" id="find" placeholder="輸入籃子 ID 或單號，按 Enter 開始核對" inputmode="numeric" autocomplete="off" enterkeyhint="search"></div>
     </div>
     <div class="chips" id="odFilter"></div>
     <div id="odList"></div>
+  </section>
+
+  <!-- 掃描核對 -->
+  <section id="v-check" style="display:none">
+    <div id="ckHead"></div>
+    <div id="result"></div>
+    <div class="card">
+      <div class="scanrow">
+        <input type="text" id="scan" placeholder="掃吊牌條碼，或輸入編號" autocomplete="off" autocapitalize="off" enterkeyhint="go">
+        <button class="btn gray" id="numBtn">123</button>
+        <button class="btn" id="camBtn">📷</button>
+      </div>
+      <div class="muted" style="margin-top:6px">一件一件掃，全部打勾才能打包。掃不到的件，點那一件可以手動確認。</div>
+    </div>
+    <div class="card"><div class="list" id="ckList"></div></div>
+    <button class="btn ok big" id="ckDone">✓ 打包完成</button>
+    <button class="btn gray" id="ckBack" style="width:100%;margin-top:8px">← 回訂單</button>
   </section>
 
   <section id="v-files" style="display:none">
@@ -181,6 +198,9 @@
 </main>
 
 <div id="printArea"></div>
+<div id="cam"><video id="video" playsinline muted></video><div class="hint"></div>
+  <div class="bar"><span class="muted" style="flex:1;color:#ccc" id="camMsg">對準吊牌條碼</span><button class="btn gray" id="camClose">關閉</button></div>
+</div>
 <div class="modal" id="mAsk"><div class="sheet"><h2 id="askMsg" style="white-space:pre-line"></h2><div class="row"><button class="btn gray" id="askNo">取消</button><button class="btn bad" id="askYes">確定</button></div></div></div>
 <div class="toast" id="toast"></div>
 <div id="net" style="position:fixed;top:0;left:0;right:0;z-index:80;background:#b45309;color:#fff;text-align:center;font-size:13px;padding:3px;display:none">離線中</div>
@@ -322,7 +342,7 @@ function orderCard(o,{preview=false,packed=false}={}){
     ${o.keep.length?`<div class="keep"><b>留在籃子（這次不出）${o.keep.length} 件：</b><div class="list">${o.keep.map(k=>`<div class="it"><img src="${esc(k.img)}" loading="lazy" onerror="this.style.visibility='hidden'"><div class="tx">${esc(k.sku)}</div></div>`).join('')}</div></div>`:''}
     <div class="row" style="margin-top:8px;display:flex;gap:8px">
       ${preview?`<button class="btn ${o.cancel?'ok':'gray'}" data-act="cancel">${o.cancel?'恢復出貨':'取消（不出）'}</button>`
-               :(o.cancel?'':`<button class="btn ${packed?'gray':'ok'}" data-act="pack">${packed?'取消打包':'✓ 打包完成'}</button>`)}
+               :(o.cancel||o.mergeInto?(o.mergeInto?'<span class="muted">併到主單一起核對</span>':''):`<button class="btn ${packed?'gray':'ok'}" data-act="check" style="flex:1">${packed?'✅ 已打包（查看）':'📷 掃描核對'}</button>`)}
     </div></div>`;
 }
 
@@ -411,6 +431,148 @@ $('#printBtn').onclick=()=>{
   setTimeout(()=>window.print(),300);
 };
 
+function parseKey(img){
+  img=img||'';
+  let m=img.match(/\/goods\/d\/([^/]+)\/\1_col_(\d+)/i);                 // grail
+  if(m) return {src:'grail',prod:m[1].toUpperCase(),col:m[2]};
+  m=img.match(/itemImg\d+\/(\d+)\/item_\1_main_(\d+)_/);                   // dot-st
+  if(m) return {src:'dotst',prod:m[1],col:m[2]};
+  m=img.match(/imgz\.jp\/\d+\/(\d+)\/\1b?_(\d+)_/);                        // zozo：標籤 [ ] = 網址編號
+  if(m) return {src:'zozo',prod:m[1],col:m[2]};
+  if(/imgz\.jp/.test(img)) return {src:'zozo',prod:'',col:''};
+  if(/palcloset/.test(img)) return {src:'palcloset',prod:'',col:''};
+  if(/uniqlo/.test(img)) return {src:'uniqlo',prod:'',col:''};
+  return {src:'other',prod:'',col:''};
+}
+// 整理輸入：iPhone 鍵盤「掃描文字」會帶進整段文字，從裡面抓出編號
+function normCode(raw){
+  const s=String(raw).normalize('NFKC');
+  let m=s.match(/\[\s*([0-9]{6,9})\s*\]?/); if(m) return m[1];                 // zozo 標籤 [109541953]
+  m=s.toUpperCase().match(/[A-Z]{3}\d{7}[A-Z]\d{4}/); if(m) return m[0];          // palcloset NO.
+  return s.replace(/\*/g,'').replace(/\s+/g,'').toUpperCase();
+}
+let AC=null;
+// iPhone 要在第一次點擊時才能啟動聲音
+function unlockAudio(){try{AC=AC||new (window.AudioContext||window.webkitAudioContext)();if(AC.state==='suspended')AC.resume();
+  const b=AC.createBuffer(1,1,22050),s=AC.createBufferSource();s.buffer=b;s.connect(AC.destination);s.start(0)}catch(e){}}
+['touchend','click','keydown'].forEach(ev=>addEventListener(ev,unlockAudio,{once:true,capture:true}));
+function beep(ok){
+  try{AC=AC||new (window.AudioContext||window.webkitAudioContext)();if(AC.state==='suspended')AC.resume();
+    const o=AC.createOscillator(),g=AC.createGain();o.connect(g);g.connect(AC.destination);
+    o.frequency.value=ok?1200:300;g.gain.value=.2;o.start();o.stop(AC.currentTime+(ok?.12:.4));}catch(e){}
+  if(navigator.vibrate) navigator.vibrate(ok?60:[120,80,120]);
+  // iPhone 不支援震動、靜音模式也聽不到聲音 → 全螢幕閃一下顏色
+  const f=$('#flash');f.style.background=ok?'rgba(22,163,74,.35)':'rgba(220,38,38,.45)';f.style.opacity=1;clearTimeout(f._h);f._h=setTimeout(()=>f.style.opacity=0,ok?180:450);
+}
+
+/* ================= 鏡頭掃碼 ================= */
+// Android Chrome 用內建 BarcodeDetector；iPhone Safari 沒有，改用 ZXing（第一次按 📷 才下載）
+let stream=null,detTimer=null,zxr=null;
+function loadZX(){
+  if(window.ZXing) return Promise.resolve();
+  return new Promise((res,rej)=>{const sc=document.createElement('script');
+    sc.src='https://cdn.jsdelivr.net/npm/@zxing/library@0.23.0/umd/index.min.js';sc.onload=res;sc.onerror=()=>rej(new Error('掃碼元件下載失敗，請確認網路'));document.head.appendChild(sc)});
+}
+$('#camBtn').onclick=async()=>{
+  try{
+    if('BarcodeDetector' in window){
+      const det=new BarcodeDetector({formats:['code_39','code_128','ean_13','ean_8','itf','qr_code','upc_a']});
+      stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment',width:{ideal:1280}}});
+      const v=$('#video');v.srcObject=stream;await v.play();$('#cam').classList.add('on');
+      const tick=async()=>{
+        if(!stream) return;
+        try{const r=await det.detect(v);if(r.length&&r[0].rawValue){const val=r[0].rawValue;stopCam();onScan(val);return}}catch(e){}
+        detTimer=setTimeout(tick,150);
+      };tick();
+    }else{
+      $('#camMsg').textContent='載入掃碼元件…';$('#cam').classList.add('on');
+      await loadZX();
+      const Z=window.ZXing, hints=new Map();
+      hints.set(Z.DecodeHintType.POSSIBLE_FORMATS,[Z.BarcodeFormat.CODE_39,Z.BarcodeFormat.CODE_128,Z.BarcodeFormat.EAN_13,Z.BarcodeFormat.EAN_8,Z.BarcodeFormat.ITF,Z.BarcodeFormat.QR_CODE,Z.BarcodeFormat.UPC_A]);
+      hints.set(Z.DecodeHintType.TRY_HARDER,true);
+      zxr=new Z.BrowserMultiFormatReader(hints,120);
+      $('#camMsg').textContent='對準吊牌條碼';
+      await zxr.decodeFromConstraints({video:{facingMode:'environment',width:{ideal:1280}}},$('#video'),res=>{
+        if(res&&zxr){const val=res.getText();stopCam();onScan(val)}});
+    }
+  }catch(e){stopCam();toast((e.name==='NotAllowedError'?'沒有鏡頭權限：iPhone 請到「設定 → Safari → 相機」改成允許':'無法開啟鏡頭：'+e.message),4500)}
+};
+function stopCam(){clearTimeout(detTimer);if(zxr){try{zxr.reset()}catch(e){}zxr=null}
+  if(stream){stream.getTracks().forEach(t=>t.stop());stream=null}const v=$('#video');if(v.srcObject){try{v.srcObject.getTracks().forEach(t=>t.stop())}catch(e){}v.srcObject=null}
+  $('#cam').classList.remove('on')}
+$('#camClose').onclick=stopCam;
+function setNum(on){$('#scan').setAttribute('inputmode',on?'numeric':'text');$('#numBtn').className='btn '+(on?'':'gray');$('#numBtn').textContent=on?'ABC':'123';try{localStorage.setItem('hml_num',on?'1':'')}catch(e){}}
+$('#numBtn').onclick=()=>{const on=$('#scan').getAttribute('inputmode')!=='numeric';setNum(on);$('#scan').blur();setTimeout(()=>$('#scan').focus(),60)};
+try{setNum(localStorage.getItem('hml_num')==='1')}catch(e){}
+
+
+/* ============ 掃描核對（出庫） ============ */
+const tok=it=>(it.sku.normalize('NFKC').match(/^[A-Za-z0-9\-]+/)||[''])[0].toUpperCase();
+let CK=null;   // 目前核對的主單 oid
+const groupOf=main=>[main,...O.orders.filter(x=>x.mergeInto===main.oid&&!x.cancel)];
+function matchItems(code){
+  const all=[];O.orders.filter(o=>!o.cancel).forEach(o=>o.items.forEach(it=>all.push({it,o})));
+  const g=code.match(/^([A-Z0-9]+)-(\d+)-(\d+)$/);
+  if(g) return all.filter(({it})=>{const k=parseKey(it.img);return k.src==='grail'&&k.prod===g[1]&&k.col===g[2]});
+  let hit=all.filter(({it})=>{const k=parseKey(it.img),t=tok(it);
+    if(t===code) return true;
+    if(k.src==='dotst'&&k.prod===code) return true;
+    if(/^\d{6,9}$/.test(code)&&k.src==='zozo'&&(k.prod===code||(k.prod&&k.prod.slice(-6)===code.slice(-6))||(/^\d{6,}$/.test(t)&&t.slice(-6)===code.slice(-6)))) return true;
+    return false});
+  if(!hit.length&&code.length>=5) hit=all.filter(({it})=>it.sku.normalize('NFKC').toUpperCase().includes(code));
+  return hit;
+}
+function openCheck(oid){
+  const o=O.orders.find(x=>x.oid===oid); CK=(o.mergeInto||o.oid);
+  show('check');clearResult();renderCheck();setTimeout(()=>$('#scan').focus(),60);
+}
+function renderCheck(){
+  if(!CK||!O) return;
+  const main=O.orders.find(x=>x.oid===CK), grp=groupOf(main), chk=O.checked||{};
+  const items=grp.flatMap(o=>o.items.map(it=>({it,o})));
+  const done=items.filter(x=>chk[x.it.id]).length;
+  $('#ckHead').innerHTML=`<div class="card order" style="border-left-color:${zc(main.uid)}">
+    <div><span class="no">${main.no}</span><b style="font-size:26px">${esc(main.uid)}</b>&nbsp;${esc(main.name)}</div>
+    <div class="muted">${grp.length>1?`併單：單 ${grp.map(x=>x.no).join(' + ')} ・ `:''}託運單 ${esc(main.codes[0]||'')}</div>
+    <div style="font-size:22px;font-weight:800;margin-top:4px;color:${done===items.length?'var(--ok)':'var(--ink)'}">已核對 ${done} / ${items.length}</div></div>`;
+  $('#ckList').innerHTML=items.map(({it,o})=>`<div class="it" data-id="${esc(it.id)}" style="${chk[it.id]?'background:#dcfce7;border-radius:8px':''}">
+    <span style="font-size:26px;width:32px;text-align:center">${chk[it.id]?'✅':'☐'}</span>
+    <img src="${esc(it.img)}" loading="lazy" onerror="this.style.visibility='hidden'">
+    <div class="tx">${esc(it.sku)}${grp.length>1?`<br><span class="muted">單 ${o.no}</span>`:''}${chk[it.id]==='manual'?' <span class="muted">（手動）</span>':''}</div></div>`).join('')+
+    (main.keep&&main.keep.length?`<div class="keep"><b>這些留在籃子，不要放進去：</b>${main.keep.map(k=>esc(k.sku)).join('、')}</div>`:'');
+  $('#ckList').querySelectorAll('.it').forEach(el=>el.onclick=async()=>{const id=el.dataset.id;
+    if(chk[id]){if(await ask('取消這件的核對？','取消核對'))setChecked(id,false)}
+    else if(await ask('吊牌掃不到？確認是這件就手動打勾。','手動確認'))setChecked(id,'manual')});
+  const all=done===items.length, packed=grp.every(x=>O.packed[x.oid]);
+  $('#ckDone').disabled=!all;$('#ckDone').style.opacity=all?1:.4;
+  $('#ckDone').textContent=packed?'已打包（按這裡取消）':all?'✓ 全部正確，打包完成':`還有 ${items.length-done} 件沒核對`;
+}
+function setChecked(id,v){
+  O.checked=O.checked||{};O.checked[id]=v;renderCheck();
+  db.collection(C.out).doc(O.id).update(new FP('checked',id),v||FV.delete()).catch(e=>toast('同步失敗：'+e.message,4000));
+}
+function onScan(raw){
+  const code=normCode(raw); $('#scan').value=''; if(!code) return;
+  const main=O.orders.find(x=>x.oid===CK), grp=groupOf(main), inGrp=new Set(grp.map(x=>x.oid)), chk=O.checked||{};
+  const c=matchItems(code), mine=c.filter(x=>inGrp.has(x.o.oid)), open=mine.filter(x=>!chk[x.it.id]);
+  if(open.length){setChecked(open[0].it.id,true);beep(true);
+    const r=$('#result');r.className='';r.style.display='block';r.style.background='var(--ok)';
+    r.innerHTML=`<div class="nm">✓ 正確</div><div class="meta">${esc(open[0].it.sku)}</div>`;clearTimeout(r._h);r._h=setTimeout(clearResult,1500);return}
+  if(mine.length) return showErr('這件已經掃過了','同一件掃了兩次？或是多了一件');
+  if(c.length){const o=c[0].o;return showErr(`這件不是這張單的！`,`是 單 ${o.no}：${o.uid} ${o.name} 的 → 放回去`)}
+  showErr('這次的出庫單沒有這件',`掃到：${code}`);
+}
+function showErr(a,b){beep(false);const r=$('#result');r.className='err';r.style.display='block';clearTimeout(r._h);
+  r.innerHTML=`<div class="nm">⚠️ ${esc(a)}</div><div class="meta">${esc(b)}</div><div class="acts"><button class="btn gray" onclick="clearResult()">關閉</button></div>`}
+function clearResult(){$('#result').style.display='none'}
+$('#scan').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();onScan($('#scan').value)}});
+$('#ckBack').onclick=()=>{CK=null;show('orders');renderOut()};
+$('#ckDone').onclick=async()=>{const main=O.orders.find(x=>x.oid===CK),grp=groupOf(main),packed=grp.every(x=>O.packed[x.oid]);
+  const upd={};grp.forEach(x=>upd['packed.'+x.oid]=!packed);
+  // FieldPath 安全寫法
+  const b=db.batch();grp.forEach(x=>b.update(db.collection(C.out).doc(O.id),new FP('packed',x.oid),!packed));await b.commit().catch(e=>toast(e.message));
+  if(!packed){toast(`單 ${main.no} 打包完成`);CK=null;$('#find').value='';show('orders');renderOut()}};
+
 /* ============ 出庫清單 / 開啟 ============ */
 function stopListen(){unsub.forEach(f=>f());unsub=[]}
 async function showList(){
@@ -443,8 +605,8 @@ function renderOut(){
   if(q) list=list.filter(o=>o.uid===q||o.oid===q||String(o.no)===q||o.uid.endsWith(q));
   else list=list.filter(o=>filt==='all'||(filt==='todo'&&!o.cancel&&!O.packed[o.oid])||(filt==='done'&&O.packed[o.oid])||o.status===filt);
   $('#odList').innerHTML=list.map(o=>orderCard(o,{packed:!!O.packed[o.oid]})).join('')||'<div class="empty">沒有符合的單</div>';
-  $('#odList').querySelectorAll('[data-act=pack]').forEach(b=>b.onclick=()=>{const oid=b.closest('.order').dataset.oid;
-    db.collection(C.out).doc(O.id).update(new FP('packed',oid),!O.packed[oid]).catch(e=>toast(e.message));if(q){$('#find').value='';}});
+  $('#odList').querySelectorAll('[data-act=check]').forEach(b=>b.onclick=()=>openCheck(b.closest('.order').dataset.oid));
+  if(CK&&$('#v-check').style.display==='block') renderCheck();
   const merged=act.filter(o=>o.mergeInto);
   $('#fileInfo').textContent=`單號 ${O.start}～${O.start+O.orders.length-1}，出貨 ${act.length} 單${O.orders.length-act.length?`、取消 ${O.orders.length-act.length} 單`:''}。順序跟 BAS 一樣（ID 尾數 → ID）。`+
     (merged.length?`工作表2 中併單的副單（單 ${merged.map(o=>o.no).join('、')}）保留該行、託運單號清空，爬蟲只會印主單的託運單。`:'');
@@ -461,6 +623,8 @@ function renderOut(){
   $('#repText').textContent=lines.join('\n');
 }
 $('#find').addEventListener('input',()=>renderOut());
+$('#find').addEventListener('keydown',e=>{if(e.key!=='Enter')return;const q=$('#find').value.trim();
+  const hit=[...new Set(O.orders.filter(o=>!o.cancel&&(o.uid===q||String(o.no)===q||o.oid===q)).map(o=>o.mergeInto||o.oid))];if(hit.length===1)openCheck(hit[0])});
 $('#copyRep').onclick=async()=>{try{await navigator.clipboard.writeText($('#repText').textContent);toast('已複製')}catch(e){toast('複製失敗，請長按手動複製')}};
 
 $('#upFile').onchange=async e=>{const f=e.target.files[0];e.target.value='';if(!f)return;
@@ -473,7 +637,7 @@ $('#pvCancel').onclick=()=>{PV=null;showList()};
 $('#backBtn').onclick=()=>showList();
 
 function show(tab){
-  ['login','list','preview','orders','files'].forEach(t=>$('#v-'+t).style.display=t===tab?'block':'none');
+  ['login','list','preview','orders','files','check'].forEach(t=>$('#v-'+t).style.display=t===tab?'block':'none');
   $('#tabs').querySelectorAll('button').forEach(b=>b.classList.toggle('on',b.dataset.tab===tab));
 }
 $('#tabs').querySelectorAll('button').forEach(b=>b.onclick=()=>show(b.dataset.tab));
