@@ -389,7 +389,8 @@ function buildMain(o){
   const ws1=XLSX.utils.aoa_to_sheet(s1,{cellDates:true});
   for(let i=2;i<=s1.length;i++){ws1['I'+i].z='yyyy/m/d';ws1['L'+i]={t:'n',f:'_xlfn.IMAGE(K'+i+',1)'}}
   const s2=[['單','單號','user.id','收件人',null,null,null,null,null]];
-  o.orders.forEach(x=>{const c=x.codes;s2.push([x.no,x.oid,x.uid,x.name,c[0]||null,x.no,x.cancel?'取消':(c[1]||null),x.no,c[2]||null])});
+  // 併單的副單不放進工作表2：爬蟲不會印它的託運單（用主單那張）
+  o.orders.filter(x=>!(x.mergeInto&&!x.cancel)).forEach(x=>{const c=x.codes;s2.push([x.no,x.oid,x.uid,x.name,c[0]||null,x.no,x.cancel?'取消':(c[1]||null),x.no,c[2]||null])});
   const wb=XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb,ws1,'工作表1');
   XLSX.utils.book_append_sheet(wb,buildSG(o),'工作表SG出');
@@ -444,7 +445,9 @@ function renderOut(){
   $('#odList').innerHTML=list.map(o=>orderCard(o,{packed:!!O.packed[o.oid]})).join('')||'<div class="empty">沒有符合的單</div>';
   $('#odList').querySelectorAll('[data-act=pack]').forEach(b=>b.onclick=()=>{const oid=b.closest('.order').dataset.oid;
     db.collection(C.out).doc(O.id).update(new FP('packed',oid),!O.packed[oid]).catch(e=>toast(e.message));if(q){$('#find').value='';}});
-  $('#fileInfo').textContent=`單號 ${O.start}～${O.start+O.orders.length-1}，出貨 ${act.length} 單${O.orders.length-act.length?`、取消 ${O.orders.length-act.length} 單`:''}。順序跟 BAS 一樣（ID 尾數 → ID）。`;
+  const merged=act.filter(o=>o.mergeInto);
+  $('#fileInfo').textContent=`單號 ${O.start}～${O.start+O.orders.length-1}，出貨 ${act.length} 單${O.orders.length-act.length?`、取消 ${O.orders.length-act.length} 單`:''}。順序跟 BAS 一樣（ID 尾數 → ID）。`+
+    (merged.length?`工作表2 已排除併單的副單 ${merged.length} 張（單 ${merged.map(o=>o.no).join('、')}），爬蟲只會印主單的託運單。`:'');
   const lines=[`【繪馬梨出庫】${O.name}　共 ${act.length} 單`];
   const bad=act.filter(o=>o.status==='bad'), dup=act.filter(o=>o.dup.length);
   if(bad.length){lines.push('','■ 有件未到貨 / 已出過：');bad.forEach(o=>lines.push(`・${o.no}｜${o.uid} ${o.name}｜`+o.items.filter(i=>i.s==='miss'||i.s==='shipped').map(i=>i.sku+(i.s==='shipped'?'（已出過）':'')).join('、')))}
