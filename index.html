@@ -90,6 +90,8 @@
   .zh{font-size:18px;font-weight:800;margin:14px 2px 6px;display:flex;align-items:center;gap:8px}
   .zh i{display:inline-block;width:14px;height:14px;border-radius:4px}
   #sgSum div{background:#f3f4f6;border-radius:10px;padding:8px 2px;font-size:13px} #sgSum b{display:block;font-size:22px}
+  #autoHint{font-size:17px;font-weight:700;margin-top:6px;min-height:0}
+  #autoHint.g{color:var(--ok)} #autoHint.w{color:var(--warn)} #autoHint.b{color:var(--bad)} #autoHint.n{color:var(--mute)}
   #flash{position:fixed;inset:0;z-index:90;pointer-events:none;opacity:0;transition:opacity .25s}
   #inapp{display:none;background:#b91c1c;color:#fff;padding:12px;font-size:15px;line-height:1.5}
 </style>
@@ -144,6 +146,7 @@
         <button class="btn gray" id="numBtn">123</button>
         <button class="btn" id="camBtn">📷</button>
       </div>
+      <div id="autoHint"></div>
       <div class="muted" id="scanHint" style="margin-top:6px">grail 吊牌直接掃條碼；zozo 輸入標籤 [ ] 裡的號碼（或後六碼）；palcloset 輸入 NO.；dot-st / GU 輸入吊牌上的編號。按「123」切換數字鍵盤。</div>
     </div>
     <div class="chips" id="boxChips"></div>
@@ -816,6 +819,30 @@ function show(tab){
 $('#tabs').querySelectorAll('button').forEach(b=>b.onclick=()=>show(b.dataset.tab));
 $('#bFilter').querySelectorAll('.chip').forEach(c=>c.onclick=()=>{bFilter=c.dataset.f;$('#bFilter').querySelectorAll('.chip').forEach(x=>x.classList.toggle('on',x===c));renderBaskets()});
 $('#scan').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();onScan($('#scan').value)}});
+function autoCount(v){
+  const z=S.lines.filter(l=>rem(l)>0&&l.src==='zozo'&&((l.prod&&l.prod.slice(-6)===v)||(/^\d{6,}$/.test(tok(l))&&tok(l).slice(-6)===v)));
+  const longer=S.lines.some(l=>rem(l)>0&&((l.prod||'').length>6&&l.prod.startsWith(v)&&l.src!=='zozo'||(tok(l).length>6&&tok(l).startsWith(v)&&l.src!=='zozo')));
+  return {n:new Set(z.map(l=>l.sku)).size,longer};
+}
+/* ================= 打 6 碼自動送出（zozo 後六碼） =================
+   只有「剛好對到一種商品」才自動送出，並在輸入框下方即時顯示進度，讓同仁知道到哪一步 */
+let autoT=null;
+function setHint(t,c){const h=$('#autoHint');h.textContent=t;h.className=c||''}
+$('#scan').addEventListener('input',()=>{
+  clearTimeout(autoT);
+  const v=$('#scan').value.trim();
+  if(!/^\d+$/.test(v)) return setHint('');
+  if(v.length<6) return setHint(`zozo 後六碼：已輸入 ${v.length} / 6`,'n');
+  if(v.length>6) return setHint(`已輸入 ${v.length} 碼，按 Enter 送出`,'n');
+  const r=autoCount(v);
+  if(r.longer) return setHint('還有更長的編號也是這樣開頭，輸入完請按 Enter','w');
+  if(r.n===1){setHint('✓ 對到 1 件，自動送出…','g');
+    autoT=setTimeout(()=>{if($('#scan').value.trim()===v){onScan(v);setHint(`✓ 已自動送出 ${v}`,'g');setTimeout(()=>{if(!$('#scan').value)setHint('')},2500)}},350);return}
+  if(r.n>1) return setHint(`對到 ${r.n} 種商品，請按 Enter 選擇`,'w');
+  setHint('找不到這 6 碼，請確認號碼，或輸入完整編號後按 Enter','b');
+});
+$('#scan').addEventListener('keydown',e=>{if(e.key==='Enter'){clearTimeout(autoT);setHint('')}});
+
 $('#mPick').onclick=e=>{if(e.target.id==='mPick')close('#mPick')};
 
 /* ================= 登入 ================= */
