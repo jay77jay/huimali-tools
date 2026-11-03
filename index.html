@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>繪馬梨 入庫配籃</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  :root{--bg:#f4f5f7;--card:#fff;--ink:#1d2330;--mute:#6b7280;--line:#e3e6eb;--pri:#2563eb;--ok:#16a34a;--warn:#d97706;--bad:#dc2626}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  body{margin:0;font-family:system-ui,-apple-system,"Noto Sans TC","Microsoft JhengHei",sans-serif;background:var(--bg);color:var(--ink);font-size:16px}
+  header{position:sticky;top:0;z-index:20;background:#111827;color:#fff;padding:10px 12px}
+  header .row{display:flex;align-items:center;gap:8px}
+  header h1{font-size:17px;margin:0;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  header .prog{font-size:14px;opacity:.85}
+  .tabs{display:flex;gap:4px;margin-top:8px}
+  .tabs button{flex:1;padding:8px 0;border:0;border-radius:8px;background:#374151;color:#fff;font-size:15px}
+  .tabs button.on{background:var(--pri)}
+  main{padding:10px 12px 90px}
+  .card{background:var(--card);border-radius:12px;padding:12px;margin-bottom:10px;box-shadow:0 1px 2px rgba(0,0,0,.05)}
+  .btn{border:0;border-radius:10px;padding:10px 14px;font-size:16px;background:var(--pri);color:#fff}
+  .btn.gray{background:#e5e7eb;color:var(--ink)} .btn.warn{background:var(--warn)} .btn.bad{background:var(--bad)} .btn.ok{background:var(--ok)}
+  .btn.big{width:100%;padding:16px;font-size:20px}
+  input[type=text],textarea,select{width:100%;padding:12px;font-size:17px;border:1px solid var(--line);border-radius:10px;background:#fff}
+  .scanrow{display:flex;gap:8px}
+  .scanrow input{flex:1}
+  .chips{display:flex;gap:6px;overflow-x:auto;padding:2px 0 6px}
+  .chip{flex:none;border:1px solid var(--line);background:#fff;border-radius:999px;padding:6px 12px;font-size:14px;white-space:nowrap}
+  .chip.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+  .chip.done{border-color:var(--ok);color:var(--ok)}
+  .chip.on.done{background:var(--ok);color:#fff}
+  #result{display:none;border-radius:14px;padding:14px;margin-bottom:10px;color:#fff;text-align:center}
+  #result .uid{font-size:64px;font-weight:800;letter-spacing:2px;line-height:1.05}
+  #result .nm{font-size:26px;font-weight:700;margin-top:2px}
+  #result .meta{font-size:14px;opacity:.95;margin-top:6px;word-break:break-all}
+  #result .acts{display:flex;gap:8px;justify-content:center;margin-top:10px}
+  #result.err{background:var(--bad)!important}
+  .grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+  .tile{background:#fff;border-radius:10px;overflow:hidden;border:2px solid transparent;position:relative}
+  .tile img{width:100%;aspect-ratio:1/1;object-fit:cover;background:#eee;display:block}
+  .tile .t{padding:6px 8px;font-size:13px;line-height:1.35;word-break:break-all}
+  .tile .sz{position:absolute;top:6px;right:6px;background:rgba(17,24,39,.85);color:#fff;border-radius:6px;padding:2px 8px;font-size:15px;font-weight:700}
+  .tile .zb{position:absolute;top:6px;left:6px;color:#fff;border-radius:6px;padding:2px 8px;font-size:13px;font-weight:700}
+  .muted{color:var(--mute);font-size:14px}
+  .list .it{display:flex;gap:10px;padding:8px 0;border-top:1px solid var(--line);align-items:center}
+  .list .it:first-child{border-top:0}
+  .list img{width:52px;height:52px;object-fit:cover;border-radius:6px;background:#eee;flex:none}
+  .list .tx{flex:1;font-size:14px;word-break:break-all}
+  .badge{display:inline-block;border-radius:6px;padding:1px 7px;font-size:12px;color:#fff;margin-right:4px}
+  .basket{border-left:8px solid #999}
+  .basket h3{margin:0 0 4px;font-size:22px}
+  .modal{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:50;display:none;align-items:flex-end;justify-content:center}
+  .modal.on{display:flex}
+  .sheet{background:#fff;width:100%;max-width:640px;max-height:90vh;overflow:auto;border-radius:16px 16px 0 0;padding:16px}
+  .sheet h2{margin:0 0 10px;font-size:19px}
+  .sheet .row{display:flex;gap:8px;margin-top:10px}
+  .sheet .row .btn{flex:1}
+  #cam{position:fixed;inset:0;background:#000;z-index:60;display:none;flex-direction:column}
+  #cam.on{display:flex}
+  #cam video{flex:1;width:100%;object-fit:cover}
+  #cam .bar{padding:12px;display:flex;gap:8px;background:#111}
+  #cam .hint{position:absolute;top:40%;left:10%;right:10%;height:20%;border:3px solid rgba(255,255,255,.8);border-radius:12px;pointer-events:none}
+  .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#111827;color:#fff;padding:10px 16px;border-radius:10px;z-index:70;display:none;font-size:15px;max-width:90%}
+  .empty{text-align:center;padding:30px 10px;color:var(--mute)}
+  pre.rep{white-space:pre-wrap;font-family:inherit;font-size:14px;background:#f9fafb;border-radius:8px;padding:10px;margin:8px 0}
+  .exph{width:100%;border-radius:8px;margin-top:6px}
+</style>
+</head>
+<body>
+<header>
+  <div class="row"><h1 id="title">繪馬梨 入庫配籃</h1><span class="prog" id="prog"></span></div>
+  <div class="tabs" id="tabs" style="display:none">
+    <button data-tab="match" class="on">配籃</button>
+    <button data-tab="baskets">籃子</button>
+    <button data-tab="report">回報</button>
+  </div>
+</header>
+
+<main>
+  <!-- 載入 -->
+  <section id="v-load">
+    <div class="card">
+      <h2 style="margin-top:0;font-size:19px">載入入庫原始檔</h2>
+      <p class="muted">選擇繪馬梨提供的入庫原始檔（.xlsx，要有 id、itemNoCode、quantity、user_id、jpShippingNo、user.name、img 欄位）。進度會存在這支手機上。</p>
+      <input type="file" id="file" accept=".xlsx,.xls" class="btn gray" style="width:100%">
+    </div>
+    <div class="card" id="resumeCard" style="display:none">
+      <div id="resumeInfo"></div>
+      <button class="btn big" id="resumeBtn" style="margin-top:10px">繼續上次的進度</button>
+    </div>
+  </section>
+
+  <!-- 配籃 -->
+  <section id="v-match" style="display:none">
+    <div id="result"></div>
+    <div class="card">
+      <div class="scanrow">
+        <input type="text" id="scan" placeholder="掃描吊牌條碼，或輸入編號搜尋" autocomplete="off" autocapitalize="off" enterkeyhint="go">
+        <button class="btn gray" id="numBtn">123</button>
+        <button class="btn" id="camBtn">📷</button>
+      </div>
+      <div class="muted" id="scanHint" style="margin-top:6px">grail 吊牌直接掃條碼；zozo 輸入標籤 [ ] 裡的號碼（或後六碼）；palcloset 輸入 NO.；dot-st / GU 輸入吊牌上的編號。按「123」切換數字鍵盤。</div>
+    </div>
+    <div class="chips" id="boxChips"></div>
+    <div class="chips" id="sizeChips"></div>
+    <div class="chips" id="colorChips"></div>
+    <div class="muted" id="gridInfo" style="margin:2px 0 8px"></div>
+    <div class="grid" id="grid"></div>
+  </section>
+
+  <!-- 籃子 -->
+  <section id="v-baskets" style="display:none">
+    <div class="chips" id="bFilter">
+      <button class="chip on" data-f="all">全部</button>
+      <button class="chip" data-f="full">已齊</button>
+      <button class="chip" data-f="part">未齊</button>
+    </div>
+    <div id="basketList"></div>
+  </section>
+
+  <!-- 回報 -->
+  <section id="v-report" style="display:none">
+    <div class="card">
+      <button class="btn warn big" id="addExBtn">＋ 記錄例外（多出 / 名稱不符）</button>
+    </div>
+    <div class="card"><h3 style="margin:0 0 6px">例外紀錄</h3><div id="exList" class="list"></div></div>
+    <div class="card"><h3 style="margin:0 0 6px">尚未到貨（依箱號）</h3><div id="missList"></div></div>
+    <div class="card">
+      <h3 style="margin:0 0 6px">回報文字</h3>
+      <pre class="rep" id="repText"></pre>
+      <button class="btn" id="copyRep">複製回報文字</button>
+    </div>
+    <div class="card">
+      <button class="btn gray" id="exportBtn">匯出配籃結果 (.xlsx)</button>
+      <button class="btn bad" id="resetBtn" style="float:right">換一批 / 清除</button>
+      <div style="clear:both"></div>
+    </div>
+  </section>
+</main>
+
+<!-- 挑選 / 確認 -->
+<div class="modal" id="mPick"><div class="sheet" id="mPickBody"></div></div>
+<!-- 例外 -->
+<div class="modal" id="mEx"><div class="sheet">
+  <h2>記錄例外</h2>
+  <label class="muted">類型</label>
+  <select id="exType"><option>入庫單上沒有（多出）</option><option>名稱/標籤不符</option><option>數量不符</option><option>其他</option></select>
+  <label class="muted" style="display:block;margin-top:8px">箱號</label>
+  <select id="exBox"></select>
+  <label class="muted" style="display:block;margin-top:8px">吊牌內容 / 說明</label>
+  <textarea id="exNote" rows="3"></textarea>
+  <label class="muted" style="display:block;margin-top:8px">照片（吊牌＋衣服）</label>
+  <input type="file" id="exPhoto" accept="image/*" capture="environment">
+  <img id="exPrev" class="exph" style="display:none">
+  <div class="row"><button class="btn gray" id="exCancel">取消</button><button class="btn warn" id="exSave">儲存</button></div>
+</div></div>
+
+<div id="cam"><video id="video" playsinline muted></video><div class="hint"></div>
+  <div class="bar"><span class="muted" style="flex:1;color:#ccc" id="camMsg">對準吊牌條碼</span><button class="btn gray" id="camClose">關閉</button></div>
+</div>
+<div class="toast" id="toast"></div>
+<div class="modal" id="mAsk"><div class="sheet"><h2 id="askMsg"></h2><div class="row"><button class="btn gray" id="askNo">取消</button><button class="btn bad" id="askYes">確定</button></div></div></div>
+
+<script>
+const LS_KEY='hml_inbound_v1', LS_LEARN='hml_learn_v1';
+const ZONE=['#6b7280','#2563eb','#dc2626','#16a34a','#9333ea','#ea580c','#0891b2','#be185d','#65a30d','#92400e'];
+let S=null;                // 目前批次狀態
+let L=loadLearn();         // 跨批次學習：sizeCode→尺寸、條碼→商品
+let curBox='ALL', curSize='ALL', curColor='ALL', query='', bFilter='all', exPhotoData=null;
+
+const $=s=>document.querySelector(s);
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const zc=uid=>ZONE[+String(uid).slice(-1)||0];
+
+function loadLearn(){try{return JSON.parse(localStorage.getItem(LS_LEARN))||{size:{},bc:{}}}catch(e){return{size:{},bc:{}}}}
+function saveLearn(){try{localStorage.setItem(LS_LEARN,JSON.stringify(L))}catch(e){}}
+function save(){try{localStorage.setItem(LS_KEY,JSON.stringify(S))}catch(e){toast('儲存失敗：手機空間不足？')}}
+function toast(m,ms=2200){const t=$('#toast');t.textContent=m;t.style.display='block';clearTimeout(t._h);t._h=setTimeout(()=>t.style.display='none',ms)}
+
+/* ---------- 解析 ---------- */
+function cleanSku(s){return String(s??'').replace(/[\r\n]/g,'').trim()}
+function parseKey(img){
+  img=img||'';
+  let m=img.match(/\/goods\/d\/([^/]+)\/\1_col_(\d+)/i);            // grail
+  if(m) return {src:'grail',prod:m[1].toUpperCase(),col:m[2]};
+  m=img.match(/itemImg\d+\/(\d+)\/item_\1_main_(\d+)_/);              // dot-st (Adastria)
+  if(m) return {src:'dotst',prod:m[1],col:m[2]};
+  m=img.match(/imgz\.jp\/\d+\/(\d+)\/\1b?_(\d+)_/);                    // zozo：標籤 [ ] 裡的號碼 = 網址的編號
+  if(m) return {src:'zozo',prod:m[1],col:m[2]};
+  if(/imgz\.jp/.test(img)) return {src:'zozo',prod:'',col:''};
+  if(/palcloset/.test(img)) return {src:'palcloset',prod:'',col:''};
+  if(/uniqlo/.test(img)) return {src:'uniqlo',prod:'',col:''};
+  return {src:'other',prod:'',col:''};
+}
+function parseSize(sku){const m=sku.normalize('NFKC').match(/(?:有庫存|庫存緊張|預約)\/?(.*)$/);return m?m[1].replace(/^\d{3,4}出貨/,'').trim():''}
+// 尺寸分組：FREE / フリー / ONE SIZE / ONE / F 都算 F
+function sizeKey(sz){const u=(sz||'').toUpperCase().replace(/\s+/g,' ').trim();if(!u)return'?';if(/^(F|FREE|フリー|ONE ?SIZE|ONE|FREE SIZE)$/.test(u))return'F';return u}
+// 顏色：去掉前面的商品編號、後面的色號
+function parseColor(sku){let s=sku.normalize('NFKC').split('/')[0];
+  if(/^E\d+-\d{5}/.test(s)) s=s.replace(/^E\d+-\d{5}/,''); else s=s.replace(/^[A-Za-z0-9\-]+/,'');
+  return s.replace(/\(?\d{1,3}\)?$/,'').replace(/[【】]/g,'').trim()||'?'}
+
+function parseWorkbook(wb,fname){
+  const ws=wb.Sheets['main']||wb.Sheets[wb.SheetNames[0]];
+  const rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:false});
+  const h=rows[0].map(x=>String(x).trim());
+  const ci=n=>h.indexOf(n);
+  const need=['id','itemNoCode','quantity','user_id','jpShippingNo','user.name','img'];
+  const miss=need.filter(n=>ci(n)<0);
+  if(miss.length) throw new Error('缺少欄位：'+miss.join('、'));
+  const lines=[];
+  for(const r of rows.slice(1)){
+    const id=String(r[ci('id')]).trim(); if(!id) continue;
+    const sku=cleanSku(r[ci('itemNoCode')]);
+    const k=parseKey(String(r[ci('img')]));
+    lines.push({id,sku,qty:Math.max(1,parseInt(r[ci('quantity')])||1),uid:String(r[ci('user_id')]).trim(),
+      name:String(r[ci('user.name')]).trim(),box:String(r[ci('jpShippingNo')]).trim(),img:String(r[ci('img')]).trim(),
+      size:parseSize(sku),color:parseColor(sku),...k});
+    lines[lines.length-1].sk=sizeKey(lines[lines.length-1].size);
+  }
+  if(!lines.length) throw new Error('檔案裡沒有資料');
+  return {file:fname,created:Date.now(),lines,rcv:{},log:[],ex:[]};
+}
+
+/* ---------- 狀態查詢 ---------- */
+const rem=l=>l.qty-(S.rcv[l.id]||0);
+const boxes=()=>[...new Set(S.lines.map(l=>l.box))].sort();
+function totals(){let t=0,d=0;for(const l of S.lines){t+=l.qty;d+=Math.min(l.qty,S.rcv[l.id]||0)}return{t,d}}
+
+/* ---------- 掃描比對 ---------- */
+function onScan(raw){
+  const code=String(raw).replace(/\*/g,'').trim().toUpperCase();
+  if(!code) return;
+  $('#scan').value='';
+  // 1) grail 吊牌：PRODUCT-COLOR-SIZE
+  const g=code.match(/^([A-Z0-9]+)-(\d+)-(\d+)$/);
+  if(g){
+    const [,prod,col,sc]=g;
+    const all=S.lines.filter(l=>l.src==='grail'&&l.prod===prod&&l.col===col);
+    if(!all.length) return notFound(code,`入庫單沒有 ${prod} 色號${col}`);
+    let open=all.filter(l=>rem(l)>0);
+    if(!open.length) return showErr(`${prod} 色號${col} 已經全部配完`,'可能重複掃到，或多出一件 → 請記錄例外');
+    if(L.size[sc]){const f=open.filter(l=>l.size===L.size[sc]); if(f.length) open=f;}
+    return resolve(open,{sizeCode:sc,code});
+  }
+  // 2) 學過的條碼
+  if(L.bc[code]){
+    const open=S.lines.filter(l=>l.sku===L.bc[code]&&rem(l)>0);
+    if(open.length) return resolve(open,{code});
+  }
+  // 3) 完整編號：zozo 標籤 [99014856]、palcloset NO. MYZ1062204A0007 → 等於 SKU 開頭的編號就直接配
+  const tok=l=>(l.sku.normalize('NFKC').match(/^[A-Za-z0-9\-]+/)||[''])[0].toUpperCase();
+  // zozo：標籤 [111761884] 對網址編號；SKU 開頭常是網址編號 +9000000，所以也接受後六碼
+  const zm=l=>l.src==='zozo'&&/^\d{6,9}$/.test(code)&&(l.prod===code||(l.prod&&l.prod.slice(-6)===code.slice(-6))||(tok(l).length>=6&&tok(l).slice(-6)===code.slice(-6)));
+  const exact=S.lines.filter(l=>rem(l)>0&&(tok(l)===code||(l.src==='dotst'&&l.prod===code)||zm(l)));
+  if(exact.length) return resolve(exact,{code:''});
+  if(S.lines.some(l=>tok(l)===code||zm(l))) return showErr(`${code} 已經全部配完`,'可能重複掃到，或多出一件 → 請記錄例外');
+  // 4) 當成搜尋（例如 uniqlo 的 480740）
+  const q=code.toLowerCase();
+  const hit=S.lines.filter(l=>rem(l)>0&&(l.sku.toLowerCase().includes(q)||l.prod.toLowerCase()===q));
+  if(hit.length){
+    const skus=new Set(hit.map(l=>l.sku));
+    if(skus.size===1 && /^[A-Z0-9]{4,}$/.test(code) && !/^\d{8,}$/.test(code)) return resolve(hit,{code});
+    query=raw.trim(); curBox='ALL'; render(); toast(`找到 ${hit.length} 件，請點選`); return;
+  }
+  // 5) 不認得的條碼（例如 JAN）→ 讓同仁從目前箱子點選，並記住
+  if(/^\d{8,14}$/.test(code)){ pendingBarcode=code; toast('不認得這個條碼，請從下面點選正確的衣服（會記住）',3500); clearResult(); return; }
+  notFound(code,'入庫單裡找不到');
+}
+let pendingBarcode=null;
+
+function resolve(open,ctx){
+  const skus=[...new Set(open.map(l=>l.sku))];
+  if(skus.length===1){
+    // 同款多件：優先目前箱子，其次清單順序
+    const pick=open.find(l=>curBox==='ALL'||l.box===curBox)||open[0];
+    if(ctx.code&&/^\d{8,14}$/.test(ctx.code)) {L.bc[ctx.code]=pick.sku;saveLearn();}
+    return assign(pick,{same:open.filter(l=>l!==pick).reduce((a,l)=>a+rem(l),0)+rem(pick)-1});
+  }
+  // 不同尺寸 → 讓同仁選，選完記住尺寸碼
+  openPicker(open,'同款不同尺寸，請選吊牌上的尺寸',l=>{
+    if(ctx.sizeCode){L.size[ctx.sizeCode]=l.size;saveLearn();}
+    assign(l,{});
+  },true);
+}
+
+function assign(l,{same=0}={}){
+  if(rem(l)<=0) return showErr('這件已經配完了','');
+  S.rcv[l.id]=(S.rcv[l.id]||0)+1;
+  S.log.push({id:l.id,t:Date.now()});
+  if(pendingBarcode){L.bc[pendingBarcode]=l.sku;saveLearn();pendingBarcode=null;}
+  save(); beep(true);
+  const basketLines=S.lines.filter(x=>x.uid===l.uid);
+  const bt=basketLines.reduce((a,x)=>a+x.qty,0), bd=basketLines.reduce((a,x)=>a+Math.min(x.qty,S.rcv[x.id]||0),0);
+  const r=$('#result');
+  r.className=''; r.style.display='block'; r.style.background=zc(l.uid);
+  r.innerHTML=`<div class="uid">${esc(l.uid)}</div><div class="nm">${esc(l.name||'（無名稱）')}</div>
+    <div class="meta">${esc(l.sku)}<br>箱 ${esc(l.box)} ・ 這籃 ${bd}/${bt}${bd===bt?' ✅ 已齊':''}${same>0?` ・ <b>同款還有 ${same} 件給別人</b>`:''}</div>
+    <div class="acts"><button class="btn gray" onclick="undo()">↩ 復原</button></div>`;
+  render(false);
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+function undo(){
+  const e=S.log.pop(); if(!e) return;
+  S.rcv[e.id]=Math.max(0,(S.rcv[e.id]||0)-1); save(); clearResult(); render(); toast('已復原上一件');
+}
+function showErr(a,b){beep(false);const r=$('#result');r.className='err';r.style.display='block';
+  r.innerHTML=`<div class="nm">⚠️ ${esc(a)}</div><div class="meta">${esc(b)}</div><div class="acts"><button class="btn gray" onclick="clearResult()">關閉</button><button class="btn warn" onclick="openEx('${esc(a)}')">記錄例外</button></div>`;}
+function notFound(code,msg){showErr(msg,`掃到：${code}`)}
+function clearResult(){$('#result').style.display='none'}
+
+/* ---------- 音效 ---------- */
+let AC=null;
+function beep(ok){
+  try{AC=AC||new (window.AudioContext||window.webkitAudioContext)();
+    const o=AC.createOscillator(),g=AC.createGain();o.connect(g);g.connect(AC.destination);
+    o.frequency.value=ok?1200:300;g.gain.value=.15;o.start();o.stop(AC.currentTime+(ok?.12:.4));}catch(e){}
+  if(navigator.vibrate) navigator.vibrate(ok?60:[120,80,120]);
+}
+
+/* ---------- 挑選視窗 ---------- */
+function openPicker(list,title,cb,showSize){
+  const b=$('#mPickBody');
+  b.innerHTML=`<h2>${esc(title)}</h2><div class="list">${list.map((l,i)=>`
+    <div class="it" data-i="${i}"><img src="${esc(l.img)}" loading="lazy" onerror="this.style.visibility='hidden'">
+    <div class="tx"><b style="font-size:18px">${esc(showSize?l.size:'')}</b> ${esc(l.sku)}<br>
+    <span class="badge" style="background:${zc(l.uid)}">${esc(l.uid)}</span>${esc(l.name)} ・ 箱 ${esc(l.box)}</div>
+    <button class="btn">選</button></div>`).join('')}</div>
+    <div class="row"><button class="btn gray" id="pkCancel">取消</button></div>`;
+  b.querySelectorAll('.it').forEach(el=>el.querySelector('button').onclick=()=>{close('#mPick');cb(list[+el.dataset.i])});
+  $('#pkCancel').onclick=()=>close('#mPick');
+  $('#mPick').classList.add('on');
+}
+function confirmTile(l){
+  const b=$('#mPickBody');
+  b.innerHTML=`<img src="${esc(l.img)}" style="width:100%;max-height:45vh;object-fit:contain;border-radius:10px;background:#eee">
+    <div style="margin-top:8px;word-break:break-all">${esc(l.sku)}　<b>${esc(l.size)}</b></div>
+    <div style="margin-top:10px;padding:14px;border-radius:12px;color:#fff;text-align:center;background:${zc(l.uid)}">
+      <div style="font-size:44px;font-weight:800">${esc(l.uid)}</div><div style="font-size:22px">${esc(l.name)}</div></div>
+    ${pendingBarcode?`<div class="muted" style="margin-top:6px">會記住條碼 ${esc(pendingBarcode)} = 這件</div>`:''}
+    <div class="row"><button class="btn gray" id="cfNo">取消</button><button class="btn ok" id="cfYes">放進這籃</button></div>`;
+  $('#cfNo').onclick=()=>close('#mPick');
+  $('#cfYes').onclick=()=>{close('#mPick');assign(l,{})};
+  $('#mPick').classList.add('on');
+}
+function close(sel){$(sel).classList.remove('on')}
+// 頁面內確認視窗（有些環境不允許 confirm/alert）
+function ask(msg,yes='確定'){return new Promise(res=>{$('#askMsg').textContent=msg;$('#askYes').textContent=yes;$('#mAsk').classList.add('on');
+  $('#askYes').onclick=()=>{close('#mAsk');res(true)};$('#askNo').onclick=()=>{close('#mAsk');res(false)}})}
+
+/* ---------- 畫面 ---------- */
+function render(resetQuery=true){
+  if(!S) return;
+  const {t,d}=totals();
+  $('#title').textContent='繪馬梨入庫 '+S.file.replace(/\.xlsx?$/i,'');
+  $('#prog').textContent=`${d}/${t}`;
+  // 箱號
+  const bx=boxes();
+  $('#boxChips').innerHTML=['ALL',...bx].map(b=>{
+    const ls=b==='ALL'?S.lines:S.lines.filter(l=>l.box===b);
+    const tt=ls.reduce((a,l)=>a+l.qty,0), dd=ls.reduce((a,l)=>a+Math.min(l.qty,S.rcv[l.id]||0),0);
+    return `<button class="chip ${curBox===b?'on':''} ${dd===tt?'done':''}" data-b="${esc(b)}">${b==='ALL'?'全部箱':'箱 '+esc(b)} ${dd}/${tt}</button>`}).join('');
+  $('#boxChips').querySelectorAll('.chip').forEach(c=>c.onclick=()=>{curBox=c.dataset.b;curSize='ALL';curColor='ALL';query='';render()});
+  // 剩餘清單
+  let open=S.lines.filter(l=>rem(l)>0&&(curBox==='ALL'||l.box===curBox));
+  if(query){const q=query.normalize('NFKC').toLowerCase();open=open.filter(l=>l.sku.normalize('NFKC').toLowerCase().includes(q)||l.name.toLowerCase().includes(q)||l.uid.includes(q))}
+  const sizes=[...new Set(open.map(l=>l.sk))].sort();
+  if(curSize!=='ALL'&&!sizes.includes(curSize)) curSize='ALL';
+  $('#sizeChips').innerHTML=sizes.length>1?['ALL',...sizes].map(s=>`<button class="chip ${curSize===s?'on':''}" data-s="${esc(s)}">${s==='ALL'?'全部尺寸':esc(s)} ${s==='ALL'?'':open.filter(l=>l.sk===s).length}</button>`).join(''):'';
+  $('#sizeChips').querySelectorAll('.chip').forEach(c=>c.onclick=()=>{curSize=c.dataset.s;curColor='ALL';render()});
+  if(curSize!=='ALL') open=open.filter(l=>l.sk===curSize);
+  const cc={};open.forEach(l=>cc[l.color]=(cc[l.color]||0)+1);
+  const colors=Object.keys(cc).sort((a,b)=>cc[b]-cc[a]);
+  if(curColor!=='ALL'&&!colors.includes(curColor)) curColor='ALL';
+  $('#colorChips').innerHTML=(colors.length>1&&open.length>6)?['ALL',...colors].map(c=>`<button class="chip ${curColor===c?'on':''}" data-c="${esc(c)}">${c==='ALL'?'全部顏色':esc(c)+' '+cc[c]}</button>`).join(''):'';
+  $('#colorChips').querySelectorAll('.chip').forEach(c=>c.onclick=()=>{curColor=c.dataset.c;render()});
+  if(curColor!=='ALL') open=open.filter(l=>l.color===curColor);
+  $('#gridInfo').innerHTML=(query?`搜尋「${esc(query)}」 <a href="#" id="clrQ">清除</a> ・ `:'')+`還沒配到 ${open.length} 行，點圖片配籃`;
+  if(query) $('#clrQ').onclick=e=>{e.preventDefault();query='';render()};
+  $('#grid').innerHTML=open.length?open.map((l,i)=>`<div class="tile" data-i="${i}">
+      <img src="${esc(l.img)}" loading="lazy" onerror="this.style.opacity=.2">
+      <span class="sz">${esc(l.size||'?')}${rem(l)>1?' ×'+rem(l):''}</span>
+      <span class="zb" style="background:${zc(l.uid)}">${esc(l.uid)}</span>
+      <div class="t">${esc(l.sku)}</div></div>`).join('')
+    :`<div class="empty" style="grid-column:1/-1">${curBox==='ALL'?'全部配完 🎉':'這箱配完了 ✅'}</div>`;
+  $('#grid').querySelectorAll('.tile').forEach(el=>el.onclick=()=>confirmTile(open[+el.dataset.i]));
+  renderBaskets(); renderReport();
+}
+
+function renderBaskets(){
+  const by={};
+  for(const l of S.lines){(by[l.uid]=by[l.uid]||{uid:l.uid,name:l.name,ls:[]}).ls.push(l)}
+  let arr=Object.values(by).sort((a,b)=>(a.uid.slice(-1)-b.uid.slice(-1))||(+a.uid-+b.uid));
+  arr.forEach(b=>{b.t=b.ls.reduce((a,l)=>a+l.qty,0);b.d=b.ls.reduce((a,l)=>a+Math.min(l.qty,S.rcv[l.id]||0),0)});
+  if(bFilter==='full') arr=arr.filter(b=>b.d===b.t); if(bFilter==='part') arr=arr.filter(b=>b.d<b.t);
+  $('#basketList').innerHTML=arr.map(b=>`<div class="card basket" style="border-left-color:${zc(b.uid)}">
+    <h3>${esc(b.uid)} <span style="font-size:17px">${esc(b.name)}</span> <span class="muted" style="float:right">${b.d}/${b.t} ${b.d===b.t?'✅':''}</span></h3>
+    <div class="list">${b.ls.map(l=>`<div class="it"><img src="${esc(l.img)}" loading="lazy" onerror="this.style.visibility='hidden'">
+      <div class="tx">${esc(l.sku)}<br><span class="muted">箱 ${esc(l.box)}</span></div>
+      <div>${rem(l)<=0?'✅':`<span style="color:var(--bad)">缺 ${rem(l)}</span>`}</div></div>`).join('')}</div></div>`).join('')||'<div class="empty">沒有符合的籃子</div>';
+}
+
+function renderReport(){
+  $('#exList').innerHTML=S.ex.length?S.ex.map((e,i)=>`<div class="it" style="flex-wrap:wrap">
+    <div class="tx"><b>${esc(e.type)}</b> ・ 箱 ${esc(e.box)}<br>${esc(e.note)}</div>
+    <button class="btn gray" onclick="delEx(${i})">刪除</button>
+    ${e.photo?`<img src="${e.photo}" class="exph" style="width:100%;height:auto">`:''}</div>`).join(''):'<div class="muted">沒有例外</div>';
+  const miss=S.lines.filter(l=>rem(l)>0);
+  const g={};miss.forEach(l=>(g[l.box]=g[l.box]||[]).push(l));
+  $('#missList').innerHTML=miss.length?Object.keys(g).sort().map(b=>`<div style="margin-top:6px"><b>箱 ${esc(b)}</b>（${g[b].length}）
+    <div class="list">${g[b].map(l=>`<div class="it"><img src="${esc(l.img)}" loading="lazy" onerror="this.style.visibility='hidden'"><div class="tx">${esc(l.sku)}${rem(l)>1?' ×'+rem(l):''}<br><span class="badge" style="background:${zc(l.uid)}">${esc(l.uid)}</span>${esc(l.name)}</div></div>`).join('')}</div></div>`).join(''):'<div class="muted">全部到齊 ✅</div>';
+  const lines=[`【繪馬梨入庫回報】${S.file.replace(/\.xlsx?$/i,'')}`];
+  const {t,d}=totals(); lines.push(`已到 ${d} / ${t} 件`);
+  if(miss.length){lines.push('','■ 入庫單上有、但沒到貨：');Object.keys(g).sort().forEach(b=>g[b].forEach(l=>lines.push(`・箱${l.box}｜${l.uid} ${l.name}｜${l.sku}${rem(l)>1?' ×'+rem(l):''}`)))}
+  if(S.ex.length){lines.push('','■ 例外（照片另附）：');S.ex.forEach((e,i)=>lines.push(`${i+1}. ${e.type}｜箱${e.box}｜${e.note}`))}
+  if(!miss.length&&!S.ex.length) lines.push('全部到齊，無例外。');
+  $('#repText').textContent=lines.join('\n');
+}
+async function delEx(i){if(await ask('刪除這筆例外？','刪除')){S.ex.splice(i,1);save();renderReport()}}
+
+/* ---------- 例外 ---------- */
+function openEx(note=''){
+  $('#exBox').innerHTML=boxes().map(b=>`<option ${b===curBox?'selected':''}>${esc(b)}</option>`).join('')+'<option>不確定</option>';
+  $('#exNote').value=note; $('#exPhoto').value=''; $('#exPrev').style.display='none'; exPhotoData=null;
+  $('#mEx').classList.add('on');
+}
+$('#exPhoto').onchange=e=>{
+  const f=e.target.files[0]; if(!f) return;
+  const img=new Image(); img.onload=()=>{
+    const s=Math.min(1,900/Math.max(img.width,img.height)), c=document.createElement('canvas');
+    c.width=img.width*s;c.height=img.height*s;c.getContext('2d').drawImage(img,0,0,c.width,c.height);
+    exPhotoData=c.toDataURL('image/jpeg',.7); $('#exPrev').src=exPhotoData; $('#exPrev').style.display='block'; URL.revokeObjectURL(img.src)};
+  img.src=URL.createObjectURL(f);
+};
+$('#exCancel').onclick=()=>close('#mEx');
+$('#exSave').onclick=()=>{
+  S.ex.push({type:$('#exType').value,box:$('#exBox').value,note:$('#exNote').value.trim(),photo:exPhotoData,t:Date.now()});
+  save(); close('#mEx'); clearResult(); renderReport(); toast('已記錄例外');
+};
+$('#addExBtn').onclick=()=>openEx();
+
+/* ---------- 鏡頭掃碼 ---------- */
+let stream=null, detTimer=null;
+$('#camBtn').onclick=async()=>{
+  if(!('BarcodeDetector' in window)){toast('這個瀏覽器不支援鏡頭掃碼，請用 Android Chrome 或藍牙掃描槍',3500);return}
+  try{
+    const det=new BarcodeDetector({formats:['code_39','code_128','ean_13','ean_8','itf','qr_code','upc_a']});
+    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment',width:{ideal:1280}}});
+    const v=$('#video'); v.srcObject=stream; await v.play(); $('#cam').classList.add('on');
+    let last='';
+    const tick=async()=>{
+      if(!stream) return;
+      try{const r=await det.detect(v); if(r.length){const val=r[0].rawValue; if(val&&val!==last){last=val;stopCam();onScan(val);return}}}catch(e){}
+      detTimer=setTimeout(tick,150);
+    }; tick();
+  }catch(e){toast('無法開啟鏡頭：'+e.message,3500);stopCam()}
+};
+function stopCam(){clearTimeout(detTimer);if(stream){stream.getTracks().forEach(t=>t.stop());stream=null}$('#cam').classList.remove('on')}
+$('#camClose').onclick=stopCam;
+
+/* ---------- 匯出 ---------- */
+$('#exportBtn').onclick=()=>{
+  const rows=S.lines.map(l=>({箱號:l.box,ID:l.uid,名稱:l.name,id:l.id,商品編號:l.sku,數量:l.qty,已到:Math.min(l.qty,S.rcv[l.id]||0),缺:Math.max(0,rem(l))}));
+  const ex=S.ex.map(e=>({類型:e.type,箱號:e.box,說明:e.note,時間:new Date(e.t).toLocaleString()}));
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(rows),'配籃結果');
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(ex.length?ex:[{類型:'無'}]),'例外');
+  try{XLSX.writeFile(wb,S.file.replace(/\.xlsx?$/i,'')+'-配籃結果.xlsx')}catch(e){toast('這個環境不能下載，請用「複製回報文字」',3500)}
+};
+$('#resetBtn').onclick=async()=>{if(await ask('清除這一批的進度？（建議先複製回報文字）','清除')){localStorage.removeItem(LS_KEY);S=null;location.reload()}};
+$('#copyRep').onclick=async()=>{try{await navigator.clipboard.writeText($('#repText').textContent);toast('已複製，可貼到 LINE')}catch(e){toast('複製失敗，請長按文字手動複製')}};
+
+/* ---------- 數字鍵盤切換（zozo 打六碼用） ---------- */
+function setNum(on){$('#scan').setAttribute('inputmode',on?'numeric':'text');$('#numBtn').className='btn '+(on?'':'gray');$('#numBtn').textContent=on?'ABC':'123';try{localStorage.setItem('hml_num',on?'1':'')}catch(e){}}
+$('#numBtn').onclick=()=>{const on=$('#scan').getAttribute('inputmode')!=='numeric';setNum(on);$('#scan').blur();setTimeout(()=>$('#scan').focus(),60)};
+try{setNum(localStorage.getItem('hml_num')==='1')}catch(e){}
+
+/* ---------- 分頁 / 啟動 ---------- */
+function show(tab){
+  ['load','match','baskets','report'].forEach(t=>$('#v-'+t).style.display=t===tab?'block':'none');
+  $('#tabs').querySelectorAll('button').forEach(b=>b.classList.toggle('on',b.dataset.tab===tab));
+  if(tab==='match') setTimeout(()=>$('#scan').focus(),50);
+}
+$('#tabs').querySelectorAll('button').forEach(b=>b.onclick=()=>show(b.dataset.tab));
+$('#bFilter').querySelectorAll('.chip').forEach(c=>c.onclick=()=>{bFilter=c.dataset.f;$('#bFilter').querySelectorAll('.chip').forEach(x=>x.classList.toggle('on',x===c));renderBaskets()});
+$('#scan').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();onScan($('#scan').value)}});
+$('#mPick').onclick=e=>{if(e.target.id==='mPick')close('#mPick')};
+
+$('#file').onchange=async e=>{
+  const f=e.target.files[0]; if(!f) return;
+  try{
+    const wb=XLSX.read(await f.arrayBuffer(),{type:'array'});
+    const ns=parseWorkbook(wb,f.name);
+    if(S&&S.file!==f.name&&totals().d>0&&!(await ask('會取代目前這批的進度，確定？','取代'))){e.target.value='';return}
+    S=ns; save(); start();
+    const src={};S.lines.forEach(l=>src[l.src]=(src[l.src]||0)+l.qty);
+    toast(`載入 ${S.lines.length} 行・${boxes().length} 箱｜`+Object.entries(src).map(([k,v])=>k+' '+v).join('、'),4000);
+  }catch(err){toast('讀取失敗：'+err.message,5000)}
+};
+function start(){S.lines.forEach(l=>{if(!l.color)l.color=parseColor(l.sku);if(!l.sk)l.sk=sizeKey(l.size)});$('#tabs').style.display='flex';curBox='ALL';render();show('match')}
+
+try{S=JSON.parse(localStorage.getItem(LS_KEY))}catch(e){S=null}
+if(S&&S.lines){const {t,d}=totals();$('#resumeCard').style.display='block';
+  $('#resumeInfo').innerHTML=`上次的批次：<b>${esc(S.file)}</b><br>進度 ${d}/${t} 件、例外 ${S.ex.length} 筆`;
+  $('#resumeBtn').onclick=start;}
+</script>
+</body>
+</html>
