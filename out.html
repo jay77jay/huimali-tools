@@ -80,6 +80,13 @@
   .zh i{display:inline-block;width:14px;height:14px;border-radius:4px}
   #autoHint{font-size:17px;font-weight:700;margin-top:6px;min-height:0}
   #autoHint.g{color:var(--ok)} #autoHint.w{color:var(--warn)} #autoHint.b{color:var(--bad)} #autoHint.n{color:var(--mute)}
+  #sugg{margin-top:6px;border-radius:10px;overflow:hidden;border:1px solid var(--line);display:none}
+  #sugg .sg{display:flex;gap:8px;align-items:center;padding:8px;border-top:1px solid var(--line);background:#fff;cursor:pointer}
+  #sugg .sg:first-child{border-top:0} #sugg .sg:active{background:#e0f2fe}
+  #sugg img{width:48px;height:48px;object-fit:cover;border-radius:6px;background:#eee;flex:none}
+  #sugg .tx{flex:1;min-width:0;font-size:14px;line-height:1.35;word-break:break-all}
+  #sugg mark{background:#fde68a;padding:0 1px;border-radius:3px}
+  #sugg .more{padding:8px;text-align:center;color:var(--mute);font-size:13px;background:#f9fafb}
   #flash{position:fixed;inset:0;z-index:90;pointer-events:none;opacity:0;transition:opacity .25s}
   #inapp{display:none;background:#b91c1c;color:#fff;padding:12px;font-size:15px;line-height:1.5}
 </style>
@@ -196,6 +203,7 @@
         <button class="btn" id="camBtn">📷</button>
       </div>
       <div id="autoHint"></div>
+      <div id="sugg"></div>
       <div class="muted" style="margin-top:6px">一件一件掃，全部打勾才能打包。掃不到的件，點那一件可以手動確認。</div>
     </div>
     <div class="card"><div class="list" id="ckList"></div></div>
@@ -623,6 +631,7 @@ function setChecked(id,v){
   db.collection(C.out).doc(O.id).update(new FP('checked',id),v||FV.delete()).catch(e=>toast('同步失敗：'+e.message,4000));
 }
 function onScan(raw){
+  if(typeof hideSugg==='function')hideSugg();
   const code=normCode(raw); $('#scan').value=''; if(!code) return;
   const main=O.orders.find(x=>x.oid===CK), grp=groupOf(main), inGrp=new Set(grp.map(x=>x.oid)), chk=O.checked||{};
   const c=matchItems(code), mine=c.filter(x=>inGrp.has(x.o.oid)), open=mine.filter(x=>!chk[x.it.id]);
@@ -653,7 +662,7 @@ $('#scan').addEventListener('input',()=>{
   clearTimeout(autoT);
   const v=$('#scan').value.trim();
   if(!/^\d+$/.test(v)) return setHint('');
-  if(v.length<6) return setHint(`zozo 後六碼：已輸入 ${v.length} / 6`,'n');
+  if(v.length<6) return setHint('');
   if(v.length>6) return setHint(`已輸入 ${v.length} 碼，按 Enter 送出`,'n');
   const r=autoCount(v);
   if(r.longer) return setHint('還有更長的編號也是這樣開頭，輸入完請按 Enter','w');
@@ -663,6 +672,51 @@ $('#scan').addEventListener('input',()=>{
   setHint('找不到這 6 碼，請確認號碼，或輸入完整編號後按 Enter','b');
 });
 $('#scan').addEventListener('keydown',e=>{if(e.key==='Enter'){clearTimeout(autoT);setHint('')}});
+function suggSource(){
+  if(!CK||!O) return [];
+  const main=O.orders.find(x=>x.oid===CK), chk=O.checked||{}, grp=groupOf(main);
+  return grp.flatMap(o=>o.items.filter(it=>!chk[it.id]).map(it=>Object.assign(it,{uid:o.uid,name:o.name,pref:1,sub:grp.length>1?'單 '+o.no:'',size:(it.sku.normalize('NFKC').match(/(?:有庫存|庫存緊張|預約)\/?(.*)$/)||['',''])[1]})));
+}
+function suggPick(it){setChecked(it.id,true);beep(true);const r=$('#result');r.className='';r.style.display='block';r.style.background='var(--ok)';
+  r.innerHTML=`<div class="nm">✓ 正確</div><div class="meta">${esc(it.sku)}</div>`;clearTimeout(r._h);r._h=setTimeout(clearResult,1500)}
+
+/* ================= 輸入時即時列出候選（模糊比對） =================
+   打前幾碼就列出可能的商品：編號開頭符合的排前面，包含的排後面；點一下就配 */
+const nrm=s=>String(s||'').normalize('NFKC').toUpperCase().replace(/[^A-Z0-9]/g,'');
+function keysOf(c){
+  if(c._k) return c._k;
+  const k=parseKey(c.img||''), t=nrm((c.sku.normalize('NFKC').match(/^[A-Za-z0-9\-]+/)||[''])[0]), ks=new Set([t,nrm(k.prod)]);
+  if(k.src==='zozo'){if(k.prod)ks.add(k.prod.slice(-6));if(/^\d{6,}$/.test(t))ks.add(t.slice(-6))}
+  if(/^E\d+-/.test(c.sku)) ks.add(nrm(c.sku.split('-')[0]).slice(1));      // uniqlo：E480740 → 480740
+  ks.delete('');return c._k={keys:[...ks],full:nrm(c.sku.split('/')[0])};
+}
+function suggest(q){
+  q=nrm(q); if(q.length<2) return [];
+  const out=[];
+  for(const c of suggSource()){const K=keysOf(c);let s=0;
+    if(K.keys.some(x=>x===q))s=4;else if(K.keys.some(x=>x.startsWith(q)))s=3;else if(K.full.includes(q))s=1;
+    if(s)out.push({c,s})}
+  return out.sort((a,b)=>(b.s-a.s)||(b.c.pref-a.c.pref)||(+String(a.c.uid).slice(-1)-+String(b.c.uid).slice(-1))||(+a.c.uid-+b.c.uid));
+}
+function hl(sku,q){const s=String(sku),i=s.toUpperCase().indexOf(String(q).toUpperCase());return i<0||!q?esc(s):esc(s.slice(0,i))+'<mark>'+esc(s.slice(i,i+q.length))+'</mark>'+esc(s.slice(i+q.length))}
+function renderSugg(){
+  const raw=$('#scan').value.trim(), el=$('#sugg');
+  const r=suggest(raw);
+  if(!r.length){el.style.display='none';el.innerHTML='';if(nrm(raw).length>=3&&!/^\d{1,5}$/.test(raw))setHint('沒有符合的商品，請確認編號','b');return}
+  const top=r.slice(0,8);
+  if(!['g','w'].includes($('#autoHint').className)) setHint(r.length===1?'符合 1 件，確認後按「選」':`符合 ${r.length} 件，對照吊牌按「選」，或繼續輸入`,'n');
+  el.style.display='block';
+  el.innerHTML=top.map((x,i)=>`<div class="sg" data-i="${i}"><img src="${esc(x.c.img)}" loading="lazy" onerror="this.style.visibility='hidden'">
+    <div class="tx">${zozoTag(x.c,raw)}${hl(x.c.sku,raw)} <b>${esc(x.c.size||'')}</b><br><span class="badge" style="background:${zc(x.c.uid)}">尾數${esc(String(x.c.uid).slice(-1))}・${esc(x.c.uid)}</span>${esc(x.c.name||'')}${x.c.sub?` <span class="muted">${esc(x.c.sub)}</span>`:''}</div>
+    <button class="btn ok" style="padding:8px 12px;flex:none">選</button></div>`).join('')+
+    (r.length>8?`<div class="more">還有 ${r.length-8} 件符合，再多輸入幾碼</div>`:'');
+  el.querySelectorAll('.sg').forEach(d=>d.onclick=()=>{const c=top[+d.dataset.i].c;clearTimeout(autoT);$('#scan').value='';hideSugg();setHint('');suggPick(c)});
+}
+// zozo 顯示標籤上 [ ] 的號碼，方便跟實物核對
+function zozoTag(c,q){const k=parseKey(c.img||'');return k.src==='zozo'&&k.prod?`<b style="font-size:15px">[${hl(k.prod,nrm(q))}]</b> `:''}
+function hideSugg(){const el=$('#sugg');if(el){el.style.display='none';el.innerHTML=''}}
+$('#scan').addEventListener('input',renderSugg);
+
 
 $('#ckBack').onclick=()=>{CK=null;show('orders');renderOut()};
 $('#ckDone').onclick=async()=>{const main=O.orders.find(x=>x.oid===CK),grp=groupOf(main),packed=grp.every(x=>O.packed[x.oid]);
