@@ -78,6 +78,14 @@
   #cam .bar{padding-bottom:calc(12px + env(safe-area-inset-bottom))!important}
   .fsel{flex:1;min-width:0;padding:10px 6px;font-size:16px;border-radius:10px;border:1px solid var(--line);background:#fff;color:var(--ink)}
   .fsel.on{border-color:var(--pri);background:#eff6ff;font-weight:700}
+  #lblArea{display:none}
+  @media print{
+    body.lbl header,body.lbl main,body.lbl .modal,body.lbl .toast,body.lbl #net,body.lbl #inapp,body.lbl #flash{display:none!important}
+    body.lbl #lblArea{display:grid!important;grid-template-columns:repeat(3,70mm);grid-auto-rows:29.7mm}
+    .lb{box-sizing:border-box;padding:2mm 4mm;display:flex;align-items:center;gap:3mm;overflow:hidden;font-family:Arial,"Microsoft JhengHei",sans-serif;color:#000}
+    .lb .i{font-size:20pt;font-weight:800;white-space:nowrap} .lb .n{font-size:15pt;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+    @page{size:A4;margin:0}
+  }
   #flash{position:fixed;inset:0;z-index:90;pointer-events:none;opacity:0;transition:opacity .25s}
   #inapp{display:none;background:#b91c1c;color:#fff;padding:12px;font-size:15px;line-height:1.5}
 </style>
@@ -124,6 +132,7 @@
 
   <!-- 配籃 -->
   <section id="v-match" style="display:none">
+    <div id="priorBar"></div>
     <div id="result"></div>
     <div class="card">
       <div class="scanrow">
@@ -150,6 +159,11 @@
       <button class="chip on" data-f="all">全部</button>
       <button class="chip" data-f="full">已齊</button>
       <button class="chip" data-f="part">未齊</button>
+    </div>
+    <div class="card">
+      <button class="btn big" id="lblBtn">🏷 列印籃子標籤</button>
+      <label style="display:flex;gap:8px;align-items:center;margin-top:8px;font-size:15px"><input type="checkbox" id="lblSkip" checked style="width:20px;height:20px">已經有舊籃的客人不印（避免重複開籃）</label>
+      <p class="muted" style="margin:6px 0 0">A4 標籤紙 3×10 格（70×29.7mm），同一個 ID 只印一張，多張入庫單也不會重複。</p>
     </div>
     <div id="basketList"></div>
   </section>
@@ -196,6 +210,7 @@
   <div class="bar"><span class="muted" style="flex:1;color:#ccc" id="camMsg">對準吊牌條碼</span><button class="btn gray" id="camClose">關閉</button></div>
 </div>
 <div class="toast" id="toast"></div>
+<div id="lblArea"></div>
 <div id="net" style="position:fixed;top:0;left:0;right:0;z-index:80;background:#b45309;color:#fff;text-align:center;font-size:13px;padding:3px;display:none">離線中：配籃會先存在手機，連線後自動同步</div>
 
 <script>
@@ -216,7 +231,7 @@ if(IN_APP) document.getElementById('inapp').style.display='block';
 db.enablePersistence({synchronizeTabs:true}).catch(()=>{});
 const FV=firebase.firestore.FieldValue, FP=firebase.firestore.FieldPath;
 // 資料位置（都以 huimali_ 開頭）
-const C={batches:'huimali_batches',lines:'huimali_lines',state:'huimali_state',ex:'huimali_ex',meta:'huimali_meta'};
+const C={batches:'huimali_batches',lines:'huimali_lines',state:'huimali_state',ex:'huimali_ex',meta:'huimali_meta',items:'huimali_items'};
 
 /* ================= 狀態 ================= */
 const ZONE=['#6b7280','#2563eb','#dc2626','#16a34a','#9333ea','#ea580c','#0891b2','#be185d','#65a30d','#92400e'];
@@ -345,11 +360,38 @@ async function openBatch(id){
   myLog=[];curBox='ALL';curJp='ALL';curSize='ALL';curColor='ALL';query='';
   $('#tabs').style.display='flex';$('#backBtn').style.display='inline-block';
   // 即時同步：配籃進度、例外、學習
-  unsub.push(db.collection(C.state).doc(id).onSnapshot(d=>{S.rcv=(d.data()||{}).rcv||{};render(false)}));
-  unsub.push(db.collection(C.ex).where('bid','==',id).onSnapshot(q=>{S.ex=q.docs.map(d=>({_id:d.id,...d.data()})).sort((a,b)=>a.t-b.t);renderReport()}));
-  unsub.push(db.collection(C.batches).doc(id).onSnapshot(d=>{if(d.exists&&S){S.name=d.data().name;S.files=d.data().files;S.closed=d.data().closed;render(false)}}));
+  unsub.push(db.collection(C.state).doc(id).onSnapshot(d=>{if(!S||S.id!==id)return;S.rcv=(d.data()||{}).rcv||{};render(false)}));
+  unsub.push(db.collection(C.ex).where('bid','==',id).onSnapshot(q=>{if(!S||S.id!==id)return;S.ex=q.docs.map(d=>({_id:d.id,...d.data()})).sort((a,b)=>a.t-b.t);renderReport()}));
+  unsub.push(db.collection(C.batches).doc(id).onSnapshot(d=>{if(d.exists&&S&&S.id===id){S.name=d.data().name;S.files=d.data().files;S.closed=d.data().closed;render(false)}}));
   render();show('match');
+  loadPrior().catch(e=>console.warn(e));
 }
+
+/* ================= 舊籃：同一位客人在之前的批次已經有籃子 ================= */
+const chunk=(a,n)=>{const r=[];for(let i=0;i<a.length;i+=n)r.push(a.slice(i,i+n));return r};
+async function syncIndex(){   // 把入庫批次的每一件建成 huimali_items（出庫頁也會做）
+  const qs=await db.collection(C.batches).get();
+  for(const bd of qs.docs.filter(d=>d.data().indexed!==true)){
+    const ld=await db.collection(C.lines).doc(bd.id).get(); if(!ld.exists) continue;
+    for(const part of chunk(ld.data().lines,400)){const b=db.batch();
+      part.forEach(l=>b.set(db.collection(C.items).doc(l.id),{uid:l.uid,sku:l.sku,img:l.img,bid:bd.id,box:l.box,qty:l.qty},{merge:true}));await b.commit()}
+    await db.collection(C.batches).doc(bd.id).update({indexed:true});
+  }
+}
+async function loadPrior(){
+  const id=S.id; await syncIndex(); if(!S||S.id!==id) return;
+  const uids=[...new Set(S.lines.map(l=>l.uid))], items=[];
+  for(const part of chunk(uids,30)){const qs=await db.collection(C.items).where('uid','in',part).get();qs.docs.forEach(d=>items.push({id:d.id,...d.data()}))}
+  const other=items.filter(x=>x.bid!==id&&!x.shipped);
+  const bids=[...new Set(other.map(x=>x.bid))], st={};
+  await Promise.all(bids.map(async b=>{const d=await db.collection(C.state).doc(b).get();st[b]=(d.data()||{}).rcv||{}}));
+  const P={};
+  other.forEach(x=>{const p=P[x.uid]=P[x.uid]||{n:0,wait:0,boxes:new Set()};if((st[x.bid]||{})[x.id]>0){p.n++;p.boxes.add(x.box)}else p.wait++});
+  Object.keys(P).forEach(k=>{if(!P[k].n)delete P[k]});
+  if(!S||S.id!==id) return;
+  S.prior=P; render(false);
+}
+const priorNote=uid=>{const p=S.prior&&S.prior[uid];return p?`<div style="margin-top:8px;background:rgba(255,255,255,.95);color:#1d2330;border-radius:10px;padding:8px;font-size:16px;font-weight:700">🧺 已經有舊籃（${p.n} 件，${[...p.boxes].map(esc).join('、')}）→ 放進同一籃，不要開新籃</div>`:''};
 
 /* ================= 配籃 ================= */
 const rem=l=>l.qty-(S.rcv[l.id]||0);
@@ -424,6 +466,7 @@ function assign(l,{same=0}={}){
   r.className='';r.style.display='block';r.style.background=zc(l.uid);
   r.innerHTML=`<div class="uid">${esc(l.uid)}</div><div class="nm">${esc(l.name||'（無名稱）')}</div>
     <div class="meta">${esc(l.sku)}<br>${esc(l.box)} ・ 這籃 ${bdn}/${bt}${bdn===bt?' ✅ 已齊':''}${same>0?` ・ <b>同款還有 ${same} 件給別人</b>`:''}</div>
+    ${priorNote(l.uid)}
     <div class="acts"><button class="btn gray" onclick="undo()">↩ 復原</button></div>`;
   render(false);
   window.scrollTo({top:0,behavior:'smooth'});
@@ -472,7 +515,7 @@ function confirmTile(l){
   b.innerHTML=`<img src="${esc(l.img)}" style="width:100%;max-height:45vh;object-fit:contain;border-radius:10px;background:#eee">
     <div style="margin-top:8px;word-break:break-all">${esc(l.sku)}　<b>${esc(l.size)}</b></div>
     <div style="margin-top:10px;padding:14px;border-radius:12px;color:#fff;text-align:center;background:${zc(l.uid)}">
-      <div style="font-size:44px;font-weight:800">${esc(l.uid)}</div><div style="font-size:22px">${esc(l.name)}</div></div>
+      <div style="font-size:44px;font-weight:800">${esc(l.uid)}</div><div style="font-size:22px">${esc(l.name)}</div>${priorNote(l.uid)}</div>
     ${pendingBarcode?`<div class="muted" style="margin-top:6px">會記住條碼 ${esc(pendingBarcode)} = 這件</div>`:''}
     <div class="row"><button class="btn gray" id="cfNo">取消</button><button class="btn ok" id="cfYes">放進這籃</button></div>`;
   $('#cfNo').onclick=()=>close('#mPick');
@@ -530,6 +573,8 @@ function render(){
       <div class="t">${esc(l.sku)}</div></div>`).join('')+(open.length>120?`<div class="empty" style="grid-column:1/-1">只顯示前 120 件，請用上面的篩選</div>`:'')
     :`<div class="empty" style="grid-column:1/-1">${curBox==='ALL'?'全部配完 🎉':'這張入庫單配完了 ✅'}</div>`;
   $('#grid').querySelectorAll('.tile').forEach(el=>el.onclick=()=>confirmTile(shown[+el.dataset.i]));
+  const pk=S.prior?Object.keys(S.prior).filter(u=>S.lines.some(l=>l.uid===u)):[];
+  $('#priorBar').innerHTML=pk.length?`<div class="card" style="background:#fef9c3;padding:10px">🧺 這批有 <b>${pk.length}</b> 位客人已經有舊籃：${pk.map(esc).join('、')}。配到他們的衣服時，放進舊籃，不用另外貼新標籤。</div>`:'';
   renderBaskets();renderReport();
 }
 function renderBaskets(){
@@ -540,6 +585,7 @@ function renderBaskets(){
   if(bFilter==='full') arr=arr.filter(b=>b.d===b.t); if(bFilter==='part') arr=arr.filter(b=>b.d<b.t);
   $('#basketList').innerHTML=arr.map(b=>`<div class="card basket" style="border-left-color:${zc(b.uid)}">
     <h3>${esc(b.uid)} <span style="font-size:17px">${esc(b.name)}</span> <span class="muted" style="float:right">${b.d}/${b.t} ${b.d===b.t?'✅':''}</span></h3>
+    ${S.prior&&S.prior[b.uid]?`<div class="keep">🧺 已有舊籃：之前的批次還有 ${S.prior[b.uid].n} 件在籃內（${[...S.prior[b.uid].boxes].map(esc).join('、')}），不用另開新籃</div>`:''}
     <div class="list">${b.ls.map(l=>`<div class="it"><img src="${esc(l.img)}" loading="lazy" onerror="this.style.visibility='hidden'">
       <div class="tx">${esc(l.sku)}<br><span class="muted">${esc(l.box)}${l.st&&l.st!=='onFlight'?' ・ 狀態 '+esc(l.st):''}</span></div>
       <div>${rem(l)<=0?'✅':`<span style="color:var(--bad)">缺 ${rem(l)}</span>`}</div></div>`).join('')}</div></div>`).join('')||'<div class="empty">沒有符合的籃子</div>';
@@ -562,6 +608,23 @@ function renderReport(){
   $('#repText').textContent=lines.join('\n');
 }
 async function delEx(i){if(await ask('刪除這筆例外？','刪除')){db.collection(C.ex).doc(S.ex[i]._id).delete().catch(e=>toast(e.message))}}
+
+/* ================= 籃子標籤 ================= */
+$('#lblBtn').onclick=()=>{
+  const seen=new Set(), skip=$('#lblSkip').checked;let skipped=0;
+  const list=[];
+  [...S.lines].sort((a,b)=>(a.uid.slice(-1)-b.uid.slice(-1))||(+a.uid-+b.uid)).forEach(l=>{
+    if(seen.has(l.uid))return;seen.add(l.uid);
+    if(skip&&S.prior&&S.prior[l.uid]){skipped++;return}
+    list.push(l)});
+  $('#lblArea').innerHTML=list.map(l=>`<div class="lb"><span class="i">${esc(l.uid)}</span><span class="n">${esc(l.name||'')}</span></div>`).join('');
+  toast(`共 ${list.length} 張標籤${skipped?`（${skipped} 位已有舊籃，不印）`:''}`,3000);
+  document.body.classList.add('lbl');
+  // iPhone 的列印是非同步的，等列印視窗關掉（afterprint）才恢復畫面
+  const done=()=>document.body.classList.remove('lbl');
+  addEventListener('afterprint',done,{once:true});setTimeout(done,120000);
+  setTimeout(()=>window.print(),300);
+};
 
 /* ================= 例外 ================= */
 function openEx(note=''){
