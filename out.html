@@ -222,6 +222,11 @@
       <button class="btn big" id="dlSG" style="margin-top:8px">下載 SG 出庫上傳檔</button>
       <button class="btn gray big" id="printBtn" style="margin-top:8px">🖨 列印出貨單（新版）</button>
     </div>
+    <div class="card" id="voidCard">
+      <h3 style="margin-top:0">作廢這次出庫</h3>
+      <p class="muted" style="margin:0 0 8px">單號編錯、出庫單要重給時使用。作廢後：7-11 託運單號、已出庫的件都會還原，可以重新上傳出庫單；如果這是今天最後一批，單號也會退回。<b>託運單已經印出來貼上的，不要作廢。</b></p>
+      <button class="btn bad" id="voidBtn">作廢這次出庫</button>
+    </div>
     <div class="card">
       <h3 style="margin-top:0">回報文字</h3>
       <pre class="rep" id="repText"></pre>
@@ -313,7 +318,7 @@ const zn=uid=>String(uid).slice(-1);   // ID 尾數＝現場的區
 const me=()=>auth.currentUser?(auth.currentUser.displayName||auth.currentUser.email):'';
 function toast(m,ms=2200){const t=$('#toast');t.textContent=m;t.style.display='block';clearTimeout(t._h);t._h=setTimeout(()=>t.style.display='none',ms)}
 function close(sel){$(sel).classList.remove('on')}
-function ask(msg,yes='確定'){return new Promise(res=>{$('#askMsg').textContent=msg;$('#askYes').textContent=yes;$('#mAsk').classList.add('on');
+function ask(msg,yes='確定',info=false){return new Promise(res=>{$('#askMsg').textContent=msg;$('#askYes').textContent=yes;$('#askNo').style.display=info?'none':'';$('#askYes').className='btn '+(info?'ok':'bad');$('#mAsk').classList.add('on');
   $('#askYes').onclick=()=>{close('#mAsk');res(true)};$('#askNo').onclick=()=>{close('#mAsk');res(false)}})}
 addEventListener('online',()=>$('#net').style.display='none');addEventListener('offline',()=>$('#net').style.display='block');
 const mmdd=d=>String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0');
@@ -454,12 +459,12 @@ async function generate(){
   const d=new Date(), key=mmdd(d);
   // 當天第幾次出庫
   const cref=db.collection(C.meta).doc('outCounter_'+VID);
-  let seq=1;
-  await db.runTransaction(async tx=>{const c=(await tx.get(cref)).data()||{};seq=((c.seq||{})[key]||0)+1;
+  let seq=1,prev={};
+  await db.runTransaction(async tx=>{const c=(await tx.get(cref)).data()||{};seq=((c.seq||{})[key]||0)+1;prev={prevLast:c.last||0,prevLastAt:c.lastAt||0};
     tx.set(cref,{last:start+n-1,seq:{[key]:seq},lastAt:Date.now()},{merge:true})});
   const name=`${key}-${seq}`;
   const ref=db.collection(C.out).doc();
-  await ref.set({v:VID,name,file:PV.file,date:d.toISOString(),seq,start,orders:PV.orders,packed:{},createdAt:FV.serverTimestamp(),createdBy:me()});
+  await ref.set({v:VID,...prev,name,file:PV.file,date:d.toISOString(),seq,start,orders:PV.orders,packed:{},createdAt:FV.serverTimestamp(),createdBy:me()});
   // 記錄 7-11 單號、標記已出庫的件
   const ops=[];
   active.forEach(o=>{o.codes.forEach(c=>ops.push([db.collection(C.codes).doc(VID+'_'+c),{v:VID,code:c,outId:ref.id,outName:name,no:o.no,oid:o.oid,at:Date.now()}]));
@@ -745,7 +750,7 @@ async function showList(){
     const ts=x=>x.data().createdAt&&x.data().createdAt.toDate?x.data().createdAt.toDate().getTime():0;
     const docs=qs.docs.sort((a,b)=>ts(b)-ts(a)).slice(0,30);
     $('#outList').innerHTML=docs.length?docs.map(d=>{const x=d.data(),n=x.orders.filter(o=>!o.cancel).length,p=Object.values(x.packed||{}).filter(Boolean).length;
-      return `<div class="card" data-id="${d.id}" style="cursor:pointer"><div style="display:flex;justify-content:space-between"><b style="font-size:18px">${esc(V.name)}${esc(x.name)}</b><span>打包 ${p}/${n}</span></div>
+      return `<div class="card" data-id="${d.id}" style="cursor:pointer;${x.void?'opacity:.45':''}"><div style="display:flex;justify-content:space-between"><b style="font-size:18px;${x.void?'text-decoration:line-through':''}">${esc(V.name)}${esc(x.name)}</b><span>${x.void?'已作廢':`打包 ${p}/${n}`}</span></div>
       <div class="muted">單號 ${x.start}～${x.start+x.orders.length-1} ・ ${esc(x.createdBy||'')}</div></div>`}).join(''):'<div class="empty">還沒有出庫紀錄</div>';
     $('#outList').querySelectorAll('[data-id]').forEach(el=>el.onclick=()=>openOut(el.dataset.id));
   }catch(e){$('#outList').innerHTML=`<div class="empty">讀取失敗：${esc(e.message)}</div>`}
@@ -757,9 +762,12 @@ async function openOut(id){
 }
 function renderOut(){
   if(!O) return;
+  const isVoid=!!O.void;
+  ['#dlMain','#dlSG','#printBtn','#voidBtn'].forEach(sel=>{$(sel).disabled=isVoid;$(sel).style.opacity=isVoid?.4:1});
+  $('#voidCard').querySelector('h3').textContent=isVoid?`已作廢（${O.voidBy||''} ${O.voidAt?new Date(O.voidAt).toLocaleString('zh-TW'):''}）`:'作廢這次出庫';
   const act=O.orders.filter(o=>!o.cancel), p=act.filter(o=>O.packed[o.oid]).length;
   $('#title').textContent=V.name+O.name;$('#prog').textContent=`打包 ${p}/${act.length}`;
-  $('#odSum').innerHTML=sumHtml(O.orders);
+  $('#odSum').innerHTML=(isVoid?'<div class="warnbox" style="grid-column:1/-1">⚠️ 這次出庫已作廢，請不要照這份出貨</div>':'')+sumHtml(O.orders);
   const F=[['all','全部狀態'],['todo','未打包'],['done','已打包'],['bad','🔴 不能出'],['part','🟡 部分出'],['none','⚪ 無紀錄']];
   $('#stSel').innerHTML=F.map(([k,t])=>`<option value="${k}" ${filt===k?'selected':''}>${t}</option>`).join('');
   const zones=[...new Set(O.orders.map(o=>zn(o.uid)))].sort();
@@ -788,6 +796,29 @@ function renderOut(){
   $('#repText').textContent=lines.join('\n');
 }
 $('#find').addEventListener('input',()=>renderOut());
+/* ============ 作廢出庫：還原 7-11 單號、已出庫的件、單號計數 ============ */
+$('#voidBtn').onclick=async()=>{
+  if(!O||O.void) return;
+  const act=O.orders.filter(o=>!o.cancel);
+  if(!(await ask(`確定作廢「${V.name}${O.name}」？\n單號 ${O.start}～${O.start+O.orders.length-1}，${act.length} 單\n\n託運單已經印出來貼上的話，請不要作廢。`,'作廢'))) return;
+  toast('作廢中…',8000);
+  const codeRefs=[...new Set(act.flatMap(o=>o.codes))].map(c=>db.collection(C.codes).doc(VID+'_'+c));
+  const itemRefs=act.flatMap(o=>o.items.filter(it=>it.s!=='none').map(it=>db.collection(C.items).doc(it.id)));
+  const ops=[];
+  // 只還原「這次出庫」寫的紀錄（之後別的出庫寫的不動）
+  await Promise.all(codeRefs.map(async r=>{const d=await r.get();if(d.exists&&d.data().outId===O.id)ops.push(b=>b.delete(r))}));
+  await Promise.all(itemRefs.map(async r=>{const d=await r.get();if(d.exists&&d.data().outId===O.id)ops.push(b=>b.set(r,{shipped:false,outId:FV.delete(),outName:FV.delete()},{merge:true}))}));
+  for(let i=0;i<ops.length;i+=400){const b=db.batch();ops.slice(i,i+400).forEach(f=>f(b));await b.commit()}
+  // 單號：如果這是最後一批，退回到這批之前
+  const cref=db.collection(C.meta).doc('outCounter_'+VID), d=new Date(O.date), key=String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0');
+  await db.runTransaction(async tx=>{const c=(await tx.get(cref)).data()||{};const upd={};
+    if(c.last===O.start+O.orders.length-1){upd.last=O.prevLast??(O.start-1);upd.lastAt=O.prevLastAt??0}   // 退回到產生這批之前
+    if(((c.seq||{})[key]||0)===O.seq){upd.seq={[key]:O.seq-1}}
+    if(Object.keys(upd).length)tx.set(cref,upd,{merge:true})});
+  await db.collection(C.out).doc(O.id).update({void:true,voidAt:Date.now(),voidBy:me()});
+  await ask(`✅ 已作廢「${V.name}${O.name}」\n還原 ${ops.length} 筆紀錄，可以重新上傳出庫單。`,'好',true);
+  showList();
+};
 $('#stSel').onchange=e=>{filt=e.target.value;renderOut()};
 $('#zoneSel').onchange=e=>{zf=e.target.value;renderOut()};
 $('#find').addEventListener('keydown',e=>{if(e.key!=='Enter')return;const q=$('#find').value.trim();
