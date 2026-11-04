@@ -375,7 +375,8 @@ function parseWorkbook(wb,fname){
     const sku=cleanSku(r[ci('itemNoCode')]), img=String(r[ci('img')]).trim(), size=parseSize(sku);
     lines.push({id,sku,qty:Math.max(1,parseInt(r[ci('quantity')])||1),uid:String(r[ci('user_id')]).trim(),
       name:String(r[ci('user.name')]).trim(),box:grp,jp:String(r[ci('jpShippingNo')]).trim(),
-      st:ci('status')>=0?String(r[ci('status')]).trim():'',img,size,sk:sizeKey(size),color:parseColor(sku),...parseKey(img)});
+      st:ci('status')>=0?String(r[ci('status')]).trim():'',alt:ci('itemNoComplete')>=0?altOf(r[ci('itemNoComplete')]).filter(x=>!sku.startsWith('E'+x)):[],   // 跟主編號相同的不重複顯示
+      img,size,sk:sizeKey(size),color:parseColor(sku),...parseKey(img)});
   }
   if(!lines.length) throw new Error(fname+' 沒有資料');
   return {grp,lines};
@@ -463,11 +464,11 @@ async function openBatch(id){
 const chunk=(a,n)=>{const r=[];for(let i=0;i<a.length;i+=n)r.push(a.slice(i,i+n));return r};
 async function syncIndex(){   // 把入庫批次的每一件建成 huimali_items（出庫頁也會做）
   const qs=await db.collection(C.batches).get();
-  for(const bd of qs.docs.filter(d=>d.data().indexed!==true)){
+  for(const bd of qs.docs.filter(d=>d.data().indexed!==2)){
     const ld=await db.collection(C.lines).doc(bd.id).get(); if(!ld.exists) continue;
     for(const part of chunk(ld.data().lines,400)){const b=db.batch();
-      part.forEach(l=>b.set(db.collection(C.items).doc(l.id),{v:vOf(bd.data()),uid:l.uid,sku:l.sku,img:l.img,bid:bd.id,box:l.box,qty:l.qty},{merge:true}));await b.commit()}
-    await db.collection(C.batches).doc(bd.id).update({indexed:true});
+      part.forEach(l=>b.set(db.collection(C.items).doc(l.id),{v:vOf(bd.data()),uid:l.uid,sku:l.sku,alt:l.alt||[],img:l.img,bid:bd.id,box:l.box,qty:l.qty},{merge:true}));await b.commit()}
+    await db.collection(C.batches).doc(bd.id).update({indexed:2});
   }
 }
 async function loadPrior(){
@@ -518,7 +519,7 @@ function onScan(raw){
   if(L.bc[code]){const open=S.lines.filter(l=>l.sku===L.bc[code]&&rem(l)>0); if(open.length) return resolve(open,{});}
   // 3) 完整編號：zozo [ ]／後六碼、palcloset NO.、dot-st 編號
   const zm=l=>l.src==='zozo'&&/^\d{6,9}$/.test(code)&&(l.prod===code||(l.prod&&l.prod.slice(-6)===code.slice(-6))||(tok(l).length>=6&&tok(l).slice(-6)===code.slice(-6)));
-  const exact=S.lines.filter(l=>rem(l)>0&&(tok(l)===code||(l.src==='dotst'&&l.prod===code)||zm(l)));
+  const exact=S.lines.filter(l=>rem(l)>0&&(tok(l)===code||(l.src==='dotst'&&l.prod===code)||zm(l)||(l.alt||[]).includes(code)));
   if(exact.length) return resolve(exact,{});
   if(S.lines.some(l=>tok(l)===code||zm(l))) return showErr(`${code} 已經全部配完`,'可能重複掃到，或多出一件 → 請記錄例外');
   // 4) 搜尋（uniqlo 480740 等）
@@ -558,7 +559,7 @@ function assign(l,{same=0}={}){
   const r=$('#result');
   r.className='';r.style.display='block';r.style.background=zc(l.uid);
   r.innerHTML=`<div class="zone">尾數 ${zn(l.uid)} 區</div><div class="uid">${esc(l.uid)}</div><div class="nm">${esc(l.name||'（無名稱）')}</div>
-    <div class="meta">${esc(l.sku)}<br>${esc(l.box)} ・ 這籃 ${bdn}/${bt}${bdn===bt?' ✅ 已齊':''}${same>0?` ・ <b>同款還有 ${same} 件給別人</b>`:''}</div>
+    <div class="meta">${esc(dn(l))}<br>${esc(l.box)} ・ 這籃 ${bdn}/${bt}${bdn===bt?' ✅ 已齊':''}${same>0?` ・ <b>同款還有 ${same} 件給別人</b>`:''}</div>
     ${priorNote(l.uid)}
     <div class="acts"><button class="btn gray" onclick="undo()">↩ 復原</button></div>`;
   render(false);
@@ -595,7 +596,7 @@ function openPicker(list,title,cb){
   const b=$('#mPickBody');
   b.innerHTML=`<h2>${esc(title)}</h2><div class="list">${list.map((l,i)=>`
     <div class="it" data-i="${i}"><img src="${esc(l.img)}" loading="lazy" onerror="this.style.visibility='hidden'">
-    <div class="tx"><b style="font-size:18px">${esc(l.size)}</b> ${esc(l.sku)}<br>
+    <div class="tx"><b style="font-size:18px">${esc(l.size)}</b> ${esc(dn(l))}<br>
     <span class="badge" style="background:${zc(l.uid)}">${esc(l.uid)}</span>${esc(l.name)} ・ ${esc(l.box)}</div>
     <button class="btn">選</button></div>`).join('')}</div>
     <div class="row"><button class="btn gray" id="pkCancel">取消</button></div>`;
@@ -606,7 +607,7 @@ function openPicker(list,title,cb){
 function confirmTile(l){
   const b=$('#mPickBody');
   b.innerHTML=`<img src="${esc(l.img)}" style="width:100%;max-height:45vh;object-fit:contain;border-radius:10px;background:#eee">
-    <div style="margin-top:8px;word-break:break-all">${esc(l.sku)}　<b>${esc(l.size)}</b></div>
+    <div style="margin-top:8px;word-break:break-all">${esc(dn(l))}　<b>${esc(l.size)}</b></div>
     <div style="margin-top:10px;padding:14px;border-radius:12px;color:#fff;text-align:center;background:${zc(l.uid)}">
       <div class="zone" style="font-size:18px">尾數 ${zn(l.uid)} 區</div><div style="font-size:44px;font-weight:800">${esc(l.uid)}</div><div style="font-size:22px">${esc(l.name)}</div>${priorNote(l.uid)}</div>
     ${pendingBarcode?`<div class="muted" style="margin-top:6px">會記住條碼 ${esc(pendingBarcode)} = 這件</div>`:''}
@@ -664,7 +665,7 @@ function render(){
       <span class="sz">${esc(l.size||'?')}${rem(l)>1?' ×'+rem(l):''}</span>
       <span class="zb" style="background:${zc(l.uid)}">${esc(l.uid)}</span>
       ${l.st&&l.st!=='onFlight'?`<span class="zb" style="background:#92400e;top:auto;bottom:52px">${esc(l.st)}</span>`:''}
-      <div class="t">${esc(l.sku)}</div></div>`).join('')+(open.length>120?`<div class="empty" style="grid-column:1/-1">只顯示前 120 件，請用上面的篩選</div>`:'')
+      <div class="t">${esc(dn(l))}</div></div>`).join('')+(open.length>120?`<div class="empty" style="grid-column:1/-1">只顯示前 120 件，請用上面的篩選</div>`:'')
     :`<div class="empty" style="grid-column:1/-1">${curBox==='ALL'?'全部配完 🎉':'這張入庫單配完了 ✅'}</div>`;
   $('#grid').querySelectorAll('.tile').forEach(el=>el.onclick=()=>confirmTile(shown[+el.dataset.i]));
   const pk=S.prior?Object.keys(S.prior).filter(u=>S.lines.some(l=>l.uid===u)):[];
@@ -694,7 +695,7 @@ function renderBaskets(){
     <h3>${esc(b.uid)} <span style="font-size:17px">${esc(b.name)}</span> <span class="muted" style="float:right">${b.d}/${b.t} ${b.d===b.t?'✅':''}</span></h3>
     ${S.prior&&S.prior[b.uid]?`<div class="keep">🧺 已有舊籃：之前的批次還有 ${S.prior[b.uid].n} 件在籃內（${[...S.prior[b.uid].boxes].map(esc).join('、')}），不用另開新籃</div>`:''}
     <div class="list">${b.ls.map(l=>`<div class="it"><img src="${esc(l.img)}" loading="lazy" onerror="this.style.visibility='hidden'">
-      <div class="tx">${esc(l.sku)}<br><span class="muted">${esc(l.box)}${l.st&&l.st!=='onFlight'?' ・ 狀態 '+esc(l.st):''}</span></div>
+      <div class="tx">${esc(dn(l))}<br><span class="muted">${esc(l.box)}${l.st&&l.st!=='onFlight'?' ・ 狀態 '+esc(l.st):''}</span></div>
       <div>${rem(l)<=0?'✅':`<span style="color:var(--bad)">缺 ${rem(l)}</span>`}</div></div>`).join('')}</div></div>`}).join('')||'<div class="empty">沒有符合的籃子</div>';
 }
 function renderReport(){
@@ -706,10 +707,10 @@ function renderReport(){
   const miss=S.lines.filter(l=>rem(l)>0);
   const g={};miss.forEach(l=>(g[l.box]=g[l.box]||[]).push(l));
   $('#missList').innerHTML=miss.length?Object.keys(g).map(b=>`<div style="margin-top:6px"><b>${esc(b)}</b>（${g[b].length}）
-    <div class="list">${g[b].map(l=>`<div class="it"><img src="${esc(l.img)}" loading="lazy" onerror="this.style.visibility='hidden'"><div class="tx">${esc(l.sku)}${rem(l)>1?' ×'+rem(l):''}${l.st&&l.st!=='onFlight'?' <b style="color:#92400e">['+esc(l.st)+']</b>':''}<br><span class="badge" style="background:${zc(l.uid)}">${esc(l.uid)}</span>${esc(l.name)}</div></div>`).join('')}</div></div>`).join(''):'<div class="muted">全部到齊 ✅</div>';
+    <div class="list">${g[b].map(l=>`<div class="it"><img src="${esc(l.img)}" loading="lazy" onerror="this.style.visibility='hidden'"><div class="tx">${esc(dn(l))}${rem(l)>1?' ×'+rem(l):''}${l.st&&l.st!=='onFlight'?' <b style="color:#92400e">['+esc(l.st)+']</b>':''}<br><span class="badge" style="background:${zc(l.uid)}">${esc(l.uid)}</span>${esc(l.name)}</div></div>`).join('')}</div></div>`).join(''):'<div class="muted">全部到齊 ✅</div>';
   const {t,d}=totals();
   const lines=[`【${V.name}入庫回報】${S.files.join('、')}`,`已到 ${d} / ${t} 件`];
-  if(miss.length){lines.push('','■ 入庫單上有、但沒到貨：');Object.keys(g).forEach(b=>g[b].forEach(l=>lines.push(`・${l.box}｜${l.uid} ${l.name}｜${l.sku}${rem(l)>1?' ×'+rem(l):''}${l.st&&l.st!=='onFlight'?' ['+l.st+']':''}`)))}
+  if(miss.length){lines.push('','■ 入庫單上有、但沒到貨：');Object.keys(g).forEach(b=>g[b].forEach(l=>lines.push(`・${l.box}｜${l.uid} ${l.name}｜${dn(l)}${rem(l)>1?' ×'+rem(l):''}${l.st&&l.st!=='onFlight'?' ['+l.st+']':''}`)))}
   if(S.ex.length){lines.push('','■ 例外（照片另附）：');S.ex.forEach((e,i)=>lines.push(`${i+1}. ${e.type}｜${e.box}｜${e.note}`))}
   if(!miss.length&&!S.ex.length) lines.push('全部到齊，無例外。');
   $('#repText').textContent=lines.join('\n');
@@ -933,12 +934,16 @@ function suggPick(l){assign(l,{})}
 
 /* ================= 輸入時即時列出候選（模糊比對） =================
    打前幾碼就列出可能的商品：編號開頭符合的排前面，包含的排後面；點一下就配 */
+// 顯示用名稱：uniqlo 的 itemNoComplete 其他編號用括弧附在後面（吊牌常印這些號碼）
+const dn=o=>o.sku+(o.alt&&o.alt.length?`（${o.alt.join('/')}）`:'');
+const altOf=s=>[...new Set(String(s||'').split('|').slice(1).map(x=>x.trim()).filter(x=>/^\d{5,}$/.test(x)))];
 const nrm=s=>String(s||'').normalize('NFKC').toUpperCase().replace(/[^A-Z0-9]/g,'');
 function keysOf(c){
   if(c._k) return c._k;
   const k=parseKey(c.img||''), t=nrm((c.sku.normalize('NFKC').match(/^[A-Za-z0-9\-]+/)||[''])[0]), ks=new Set([t,nrm(k.prod)]);
   if(k.src==='zozo'){if(k.prod)ks.add(k.prod.slice(-6));if(/^\d{6,}$/.test(t))ks.add(t.slice(-6))}
   if(/^E\d+-/.test(c.sku)) ks.add(nrm(c.sku.split('-')[0]).slice(1));      // uniqlo：E480740 → 480740
+  (c.alt||[]).forEach(a=>ks.add(a));
   ks.delete('');return c._k={keys:[...ks],full:nrm(c.sku.split('/')[0])};
 }
 function suggest(q){
@@ -958,7 +963,7 @@ function renderSugg(){
   if(!['g','w'].includes($('#autoHint').className)) setHint(r.length===1?'符合 1 件，確認後按「選」':`符合 ${r.length} 件，對照吊牌按「選」，或繼續輸入`,'n');
   el.style.display='block';
   el.innerHTML=top.map((x,i)=>`<div class="sg" data-i="${i}"><img src="${esc(x.c.img)}" loading="lazy" onerror="this.style.visibility='hidden'">
-    <div class="tx">${zozoTag(x.c,raw)}${hl(x.c.sku,raw)} <b>${esc(x.c.size||'')}</b><br><span class="badge" style="background:${zc(x.c.uid)}">尾數${esc(String(x.c.uid).slice(-1))}・${esc(x.c.uid)}</span> ${esc(x.c.name||'')}${x.c.sub?` <span class="muted">${esc(x.c.sub)}</span>`:''}</div>
+    <div class="tx">${zozoTag(x.c,raw)}${hl(dn(x.c),raw)} <b>${esc(x.c.size||'')}</b><br><span class="badge" style="background:${zc(x.c.uid)}">尾數${esc(String(x.c.uid).slice(-1))}・${esc(x.c.uid)}</span> ${esc(x.c.name||'')}${x.c.sub?` <span class="muted">${esc(x.c.sub)}</span>`:''}</div>
     <button class="btn ok" style="padding:8px 12px;flex:none">選</button></div>`).join('')+
     (r.length>8?`<div class="more">還有 ${r.length-8} 件符合，再多輸入幾碼</div>`:'');
   el.querySelectorAll('.sg').forEach(d=>d.onclick=()=>{const c=top[+d.dataset.i].c;clearTimeout(autoT);$('#scan').value='';hideSugg();setHint('');suggPick(c)});

@@ -322,17 +322,17 @@ const chunk=(a,n)=>{const r=[];for(let i=0;i<a.length;i+=n)r.push(a.slice(i,i+n)
 /* ============ 入庫索引：把入庫批次的每一件建成 bkt_items（每件一筆） ============ */
 async function syncIndex(){
   const qs=await db.collection(C.batches).get();
-  const todo=qs.docs.filter(d=>d.data().indexed!==true);
+  const todo=qs.docs.filter(d=>d.data().indexed!==2);
   for(const bd of todo){
     const ld=await db.collection(C.lines).doc(bd.id).get(); if(!ld.exists) continue;
     const lines=ld.data().lines;
     for(const part of chunk(lines,400)){
       const b=db.batch();
       // merge：不覆蓋已出庫的標記
-      part.forEach(l=>b.set(db.collection(C.items).doc(l.id),{v:vOf(bd.data()),uid:l.uid,sku:l.sku,img:l.img,bid:bd.id,box:l.box,qty:l.qty},{merge:true}));
+      part.forEach(l=>b.set(db.collection(C.items).doc(l.id),{v:vOf(bd.data()),uid:l.uid,sku:l.sku,alt:l.alt||[],img:l.img,bid:bd.id,box:l.box,qty:l.qty},{merge:true}));
       await b.commit();
     }
-    await db.collection(C.batches).doc(bd.id).update({indexed:true});
+    await db.collection(C.batches).doc(bd.id).update({indexed:2});
   }
   return todo.length;
 }
@@ -385,11 +385,11 @@ async function buildPreview(file){
     const idx={};(byUid[o.uid]||[]).forEach(x=>idx[x.id]=x);
     let found=0,miss=0,shipped=0;
     o.items.forEach(it=>{const x=idx[it.id];
-      if(!x){it.s='none';return} found++;
+      if(!x){it.s='none';return} found++; if(x.alt&&x.alt.length)it.alt=x.alt;
       if(x.shipped){it.s='shipped';it.outName=x.outName||'';shipped++;return}
       if(got(x)){it.s='ok';it.box=x.box}else{it.s='miss';it.box=x.box;miss++}});
     // 籃子裡還有、但這次不出的件
-    o.keep=(byUid[o.uid]||[]).filter(x=>!dispatchIds.has(x.id)&&!x.shipped&&got(x)).map(x=>({id:x.id,sku:x.sku,img:x.img,box:x.box}));
+    o.keep=(byUid[o.uid]||[]).filter(x=>!dispatchIds.has(x.id)&&!x.shipped&&got(x)).map(x=>({id:x.id,sku:x.sku,alt:x.alt||[],img:x.img,box:x.box}));
     o.notYet=(byUid[o.uid]||[]).filter(x=>!dispatchIds.has(x.id)&&!x.shipped&&!got(x)).length;
     o.dup=o.codes.filter(c=>used[c]).map(c=>({c,...used[c]}));
     o.siblings=byU[o.uid].filter(x=>x!==o.oid);
@@ -417,8 +417,8 @@ function orderCard(o,{preview=false,packed=false}={}){
     ${(o.siblings||[]).length?mergeNote(o):''}
     ${o.dup.length?`<div class="warnbox" style="margin:6px 0 0">⚠️ 7-11 單號已經用過：${o.dup.map(d=>`${esc(d.c)}（${esc(d.outName||'')} 單 ${esc(d.no??'')}）`).join('、')}</div>`:''}
     <div class="list" style="margin-top:4px">${o.items.map(it=>`<div class="it"><img src="${esc(it.img)}" loading="lazy" onerror="this.style.visibility='hidden'">
-      <div class="tx">${esc(it.sku)} ${itemTag(it)}${it.box?`<br><span class="muted">${esc(it.box)}</span>`:''}</div></div>`).join('')}</div>
-    ${o.keep.length?`<div class="keep"><b>留在籃子（這次不出）${o.keep.length} 件：</b><div class="list">${o.keep.map(k=>`<div class="it"><img src="${esc(k.img)}" loading="lazy" onerror="this.style.visibility='hidden'"><div class="tx">${esc(k.sku)}</div></div>`).join('')}</div></div>`:''}
+      <div class="tx">${esc(dn(it))} ${itemTag(it)}${it.box?`<br><span class="muted">${esc(it.box)}</span>`:''}</div></div>`).join('')}</div>
+    ${o.keep.length?`<div class="keep"><b>留在籃子（這次不出）${o.keep.length} 件：</b><div class="list">${o.keep.map(k=>`<div class="it"><img src="${esc(k.img)}" loading="lazy" onerror="this.style.visibility='hidden'"><div class="tx">${esc(dn(k))}</div></div>`).join('')}</div></div>`:''}
     <div class="row" style="margin-top:8px;display:flex;gap:8px">
       ${preview?`<button class="btn ${o.cancel?'ok':'gray'}" data-act="cancel">${o.cancel?'恢復出貨':'取消（不出）'}</button>`
                :(o.cancel||o.mergeInto?(o.mergeInto?'<span class="muted">併到主單一起核對</span>':''):`<button class="btn ${packed?'gray':'ok'}" data-act="check" style="flex:1">${packed?'✅ 已打包（查看）':'📷 掃描核對'}</button>`)}
@@ -486,7 +486,7 @@ function buildSG(o){
 function buildMain(o){
   const date=new Date(o.date);date.setHours(0,0,0,0);
   const s1=[['單','單號','明細備註','收件人','收件人地址','商品編號','數量','商品名稱','訂單日期',null,'img','img_show']];
-  o.orders.forEach(x=>x.items.forEach(it=>s1.push([x.no,x.oid,x.uid,x.name,x.tp.replace(/#/g,'\n'),it.sku,1,it.sku,date,null,it.img,null])));
+  o.orders.forEach(x=>x.items.forEach(it=>s1.push([x.no,x.oid,x.uid,x.name,x.tp.replace(/#/g,'\n'),it.sku,1,dn(it),date,null,it.img,null])));
   const ws1=XLSX.utils.aoa_to_sheet(s1,{cellDates:true});
   for(let i=2;i<=s1.length;i++){ws1['I'+i].z='yyyy/m/d';ws1['L'+i]={t:'n',f:'_xlfn.IMAGE(K'+i+',1)'}}
   const s2=[['單','單號','user.id','收件人',null,null,null,null,null]];
@@ -507,8 +507,8 @@ $('#printBtn').onclick=()=>{
     <div class="p-head"><span class="p-no">${x.no}</span><span class="p-uid">${esc(x.uid)}</span><span class="p-name">${esc(x.name)}</span>
       ${(x.siblings||[]).length?`<span class="p-flag">${x.mergeInto?'併入單 '+(O.orders.find(y=>y.oid===x.mergeInto)||{}).no+'・託運單不用':'併單主單'}</span>`:''}${x.cancel?'<span class="p-flag">取消</span>':['bad','part'].includes(x.status)?`<span class="p-flag">${ST[x.status][0].replace(/^\S+ /,'')}</span>`:''}
       <span class="p-code">${x.codes.map(esc).join('<br>')}</span></div>
-    ${x.items.map(it=>`<div class="p-it"><img src="${esc(it.img)}" onerror="this.style.visibility='hidden'"><span>☐ ${esc(it.sku)}</span>${it.s==='miss'?'<span class="p-flag">未到貨</span>':it.s==='shipped'?'<span class="p-flag">已出過</span>':''}</div>`).join('')}
-    ${x.keep.length?`<div class="p-keep"><b>留籃：</b>${x.keep.map(k=>esc(k.sku)).join('　')}</div>`:''}</div>`).join('');
+    ${x.items.map(it=>`<div class="p-it"><img src="${esc(it.img)}" onerror="this.style.visibility='hidden'"><span>☐ ${esc(dn(it))}</span>${it.s==='miss'?'<span class="p-flag">未到貨</span>':it.s==='shipped'?'<span class="p-flag">已出過</span>':''}</div>`).join('')}
+    ${x.keep.length?`<div class="p-keep"><b>留籃：</b>${x.keep.map(k=>esc(dn(k))).join('　')}</div>`:''}</div>`).join('');
   setTimeout(()=>window.print(),300);
 };
 
@@ -596,7 +596,7 @@ function matchItems(code){
   const g=code.match(/^([A-Z0-9]+)-(\d+)-(\d+)$/);
   if(g) return all.filter(({it})=>{const k=parseKey(it.img);return k.src==='grail'&&k.prod===g[1]&&k.col===g[2]});
   let hit=all.filter(({it})=>{const k=parseKey(it.img),t=tok(it);
-    if(t===code) return true;
+    if(t===code||(it.alt||[]).includes(code)) return true;
     if(k.src==='dotst'&&k.prod===code) return true;
     if(/^\d{6,9}$/.test(code)&&k.src==='zozo'&&(k.prod===code||(k.prod&&k.prod.slice(-6)===code.slice(-6))||(/^\d{6,}$/.test(t)&&t.slice(-6)===code.slice(-6)))) return true;
     return false});
@@ -620,8 +620,8 @@ function renderCheck(){
   $('#ckList').innerHTML=items.map(({it,o})=>`<div class="it" data-id="${esc(it.id)}" style="${chk[it.id]?'background:#dcfce7;border-radius:8px':''}">
     <span style="font-size:26px;width:32px;text-align:center">${chk[it.id]?'✅':'☐'}</span>
     <img src="${esc(it.img)}" loading="lazy" onerror="this.style.visibility='hidden'">
-    <div class="tx">${esc(it.sku)}${grp.length>1?`<br><span class="muted">單 ${o.no}</span>`:''}${chk[it.id]==='manual'?' <span class="muted">（手動）</span>':''}</div></div>`).join('')+
-    (main.keep&&main.keep.length?`<div class="keep"><b>這些留在籃子，不要放進去：</b>${main.keep.map(k=>esc(k.sku)).join('、')}</div>`:'');
+    <div class="tx">${esc(dn(it))}${grp.length>1?`<br><span class="muted">單 ${o.no}</span>`:''}${chk[it.id]==='manual'?' <span class="muted">（手動）</span>':''}</div></div>`).join('')+
+    (main.keep&&main.keep.length?`<div class="keep"><b>這些留在籃子，不要放進去：</b>${main.keep.map(k=>esc(dn(k))).join('、')}</div>`:'');
   $('#ckList').querySelectorAll('.it').forEach(el=>el.onclick=async()=>{const id=el.dataset.id;
     if(chk[id]){if(await ask('取消這件的核對？','取消核對'))setChecked(id,false)}
     else if(await ask('吊牌掃不到？確認是這件就手動打勾。','手動確認'))setChecked(id,'manual')});
@@ -685,12 +685,16 @@ function suggPick(it){setChecked(it.id,true);beep(true);const r=$('#result');r.c
 
 /* ================= 輸入時即時列出候選（模糊比對） =================
    打前幾碼就列出可能的商品：編號開頭符合的排前面，包含的排後面；點一下就配 */
+// 顯示用名稱：uniqlo 的 itemNoComplete 其他編號用括弧附在後面（吊牌常印這些號碼）
+const dn=o=>o.sku+(o.alt&&o.alt.length?`（${o.alt.join('/')}）`:'');
+const altOf=s=>[...new Set(String(s||'').split('|').slice(1).map(x=>x.trim()).filter(x=>/^\d{5,}$/.test(x)))];
 const nrm=s=>String(s||'').normalize('NFKC').toUpperCase().replace(/[^A-Z0-9]/g,'');
 function keysOf(c){
   if(c._k) return c._k;
   const k=parseKey(c.img||''), t=nrm((c.sku.normalize('NFKC').match(/^[A-Za-z0-9\-]+/)||[''])[0]), ks=new Set([t,nrm(k.prod)]);
   if(k.src==='zozo'){if(k.prod)ks.add(k.prod.slice(-6));if(/^\d{6,}$/.test(t))ks.add(t.slice(-6))}
   if(/^E\d+-/.test(c.sku)) ks.add(nrm(c.sku.split('-')[0]).slice(1));      // uniqlo：E480740 → 480740
+  (c.alt||[]).forEach(a=>ks.add(a));
   ks.delete('');return c._k={keys:[...ks],full:nrm(c.sku.split('/')[0])};
 }
 function suggest(q){
@@ -710,7 +714,7 @@ function renderSugg(){
   if(!['g','w'].includes($('#autoHint').className)) setHint(r.length===1?'符合 1 件，確認後按「選」':`符合 ${r.length} 件，對照吊牌按「選」，或繼續輸入`,'n');
   el.style.display='block';
   el.innerHTML=top.map((x,i)=>`<div class="sg" data-i="${i}"><img src="${esc(x.c.img)}" loading="lazy" onerror="this.style.visibility='hidden'">
-    <div class="tx">${zozoTag(x.c,raw)}${hl(x.c.sku,raw)} <b>${esc(x.c.size||'')}</b><br><span class="badge" style="background:${zc(x.c.uid)}">尾數${esc(String(x.c.uid).slice(-1))}・${esc(x.c.uid)}</span> ${esc(x.c.name||'')}${x.c.sub?` <span class="muted">${esc(x.c.sub)}</span>`:''}</div>
+    <div class="tx">${zozoTag(x.c,raw)}${hl(dn(x.c),raw)} <b>${esc(x.c.size||'')}</b><br><span class="badge" style="background:${zc(x.c.uid)}">尾數${esc(String(x.c.uid).slice(-1))}・${esc(x.c.uid)}</span> ${esc(x.c.name||'')}${x.c.sub?` <span class="muted">${esc(x.c.sub)}</span>`:''}</div>
     <button class="btn ok" style="padding:8px 12px;flex:none">選</button></div>`).join('')+
     (r.length>8?`<div class="more">還有 ${r.length-8} 件符合，再多輸入幾碼</div>`:'');
   el.querySelectorAll('.sg').forEach(d=>d.onclick=()=>{const c=top[+d.dataset.i].c;clearTimeout(autoT);$('#scan').value='';hideSugg();setHint('');suggPick(c)});
