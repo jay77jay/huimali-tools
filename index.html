@@ -406,16 +406,20 @@ async function createBatch(files){
 }
 async function addFilesToBatch(files){
   const parsed=await readFiles(files);
-  let added=0,dup=0;
+  let added=0,dup=0,fixed=0;
   await db.runTransaction(async tx=>{
     const lr=db.collection(C.lines).doc(S.id), br=db.collection(C.batches).doc(S.id);
     const cur=(await tx.get(lr)).data().lines, bd=(await tx.get(br)).data();
-    const have=new Set(cur.map(l=>l.id)), files=[...bd.files];
-    for(const p of parsed){if(!files.includes(p.grp))files.push(p.grp);for(const l of p.lines){if(have.has(l.id)){dup++;continue}have.add(l.id);cur.push(l);added++}}
+    const byId=new Map(cur.map(l=>[l.id,l])), files=[...bd.files];
+    for(const p of parsed){if(!files.includes(p.grp))files.push(p.grp);for(const l of p.lines){
+      const old=byId.get(l.id);
+      // 已經有的行：補上舊版沒有的欄位（例如 uniqlo 的其他編號），配籃進度不動
+      if(old){dup++;if((l.alt||[]).length&&!(old.alt||[]).length){old.alt=l.alt;fixed++}continue}
+      byId.set(l.id,l);cur.push(l);added++}}
     tx.set(lr,{lines:cur});
     tx.update(br,{indexed:false,files,lineCount:cur.length,qty:cur.reduce((a,l)=>a+l.qty,0),name:bd.name.replace(/ .*$/,' ')+files.join('、')});
   });
-  toast(`加入 ${added} 行${dup?`，略過重複 ${dup} 行`:''}`,3500);
+  toast(`加入 ${added} 行${dup?`，重複 ${dup} 行`:''}${fixed?`，補上 ${fixed} 件的其他編號`:''}`,4000);
   await openBatch(S.id);
 }
 
@@ -958,7 +962,8 @@ function hl(sku,q){const s=String(sku),i=s.toUpperCase().indexOf(String(q).toUpp
 function renderSugg(){
   const raw=$('#scan').value.trim(), el=$('#sugg');
   const r=suggest(raw);
-  if(!r.length){el.style.display='none';el.innerHTML='';if(nrm(raw).length>=3&&!/^\d{1,5}$/.test(raw))setHint('沒有符合的商品，請確認編號','b');return}
+  if(!r.length){el.style.display='none';el.innerHTML='';
+    if(nrm(raw).length>=3&&!/^\d{1,5}$/.test(raw)){const d=doneMatch(raw);setHint(d?`這個號碼的商品已經配過了 → 籃 ${d.uid} ${d.name}`:'沒有符合的商品，請確認編號','b')}return}
   const top=r.slice(0,8);
   if(!['g','w'].includes($('#autoHint').className)) setHint(r.length===1?'符合 1 件，確認後按「選」':`符合 ${r.length} 件，對照吊牌按「選」，或繼續輸入`,'n');
   el.style.display='block';
@@ -970,6 +975,9 @@ function renderSugg(){
 }
 // zozo 顯示標籤上 [ ] 的號碼，方便跟實物核對
 function zozoTag(c,q){const k=parseKey(c.img||'');return k.src==='zozo'&&k.prod?`<b style="font-size:15px">[${hl(k.prod,nrm(q))}]</b> `:''}
+// 已經配完的件裡有沒有這個號碼（讓同仁知道不是打錯，而是已經配過）
+function doneMatch(raw){if(typeof S==='undefined'||!S||!S.lines)return null;const q=nrm(raw);
+  return S.lines.find(l=>rem(l)<=0&&keysOf(l).keys.some(x=>x===q||x.startsWith(q)))||null}
 function hideSugg(){const el=$('#sugg');if(el){el.style.display='none';el.innerHTML=''}}
 $('#scan').addEventListener('input',renderSugg);
 

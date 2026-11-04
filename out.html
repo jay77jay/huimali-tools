@@ -721,6 +721,7 @@ function renderSugg(){
 }
 // zozo 顯示標籤上 [ ] 的號碼，方便跟實物核對
 function zozoTag(c,q){const k=parseKey(c.img||'');return k.src==='zozo'&&k.prod?`<b style="font-size:15px">[${hl(k.prod,nrm(q))}]</b> `:''}
+function doneMatch(){return null}
 function hideSugg(){const el=$('#sugg');if(el){el.style.display='none';el.innerHTML=''}}
 $('#scan').addEventListener('input',renderSugg);
 
