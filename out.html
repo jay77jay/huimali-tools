@@ -173,7 +173,7 @@
     <div id="pvWarn"></div>
     <div class="sum" id="pvSum"></div>
     <div class="card" style="margin-top:10px">
-      <label class="muted">起始單號（上次用到 <b id="lastNo">0</b>）</label>
+      <label class="muted">起始單號：<b id="lastNo"></b></label>
       <input type="text" id="startNo" inputmode="numeric">
       <p class="muted" style="margin:6px 0">🔴 / ⚪ 只是警告，一樣會產生。不出貨的單請在下面按「取消」。</p>
       <button class="btn ok big" id="genBtn">確認，產生出庫檔案</button>
@@ -797,7 +797,10 @@ $('#copyRep').onclick=async()=>{try{await navigator.clipboard.writeText($('#repT
 $('#upFile').onchange=async e=>{const f=e.target.files[0];e.target.value='';if(!f)return;
   try{PV=await buildPreview(f);
     const c=(await db.collection(C.meta).doc('outCounter_'+VID).get()).data()||{};
-    $('#lastNo').textContent=c.last||0;$('#startNo').value=(c.last||0)+1;toast('',1);showPreview();
+    // 單號每天從 1 開始；同一天的第二批才接續
+    const sameDay=c.lastAt&&new Date(c.lastAt).toDateString()===new Date().toDateString();
+    $('#lastNo').textContent=sameDay?`今天已用到 ${c.last}，接續`:`今天第一批，從 1 開始${c.lastAt?`（上次 ${new Date(c.lastAt).getMonth()+1}/${new Date(c.lastAt).getDate()} 用到 ${c.last}）`:''}`;
+    $('#startNo').value=sameDay?(c.last||0)+1:1;toast('',1);showPreview();
   }catch(err){toast('讀取失敗：'+err.message,5000)}};
 $('#genBtn').onclick=()=>generate().catch(e=>toast('產生失敗：'+e.message,5000));
 $('#pvCancel').onclick=()=>{PV=null;showList()};
