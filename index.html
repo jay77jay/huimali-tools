@@ -224,7 +224,8 @@
       <button class="btn" id="copyRep">複製回報文字</button>
     </div>
     <div class="card">
-      <button class="btn gray" onclick="$('#addFile').click()">＋ 加入入庫單到這批</button>
+      <button class="btn gray" onclick="$('#addFile').click()">＋ 加入入庫單 / 補資料</button>
+      <p class="muted" style="margin:6px 0 8px">加入新的入庫單；或選同一份入庫單，補上舊版沒讀到的資料（例如 uniqlo 吊牌上的其他編號），配籃進度不會變。</p>
       <input type="file" id="addFile" accept=".xlsx,.xls" multiple style="display:none">
       <button class="btn gray" id="exportBtn" style="margin-top:8px">匯出配籃結果 (.xlsx)</button>
       <button class="btn bad" id="closeBtn" style="float:right;margin-top:8px">結案</button>
