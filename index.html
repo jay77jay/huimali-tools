@@ -337,7 +337,7 @@ const zn=uid=>String(uid).slice(-1);   // ID 尾數＝現場的區
 const me=()=>auth.currentUser?(auth.currentUser.displayName||auth.currentUser.email):'';
 function toast(m,ms=2200){const t=$('#toast');t.textContent=m;t.style.display='block';clearTimeout(t._h);t._h=setTimeout(()=>t.style.display='none',ms)}
 function close(sel){$(sel).classList.remove('on')}
-function ask(msg,yes='確定'){return new Promise(res=>{$('#askMsg').textContent=msg;$('#askYes').textContent=yes;$('#mAsk').classList.add('on');
+function ask(msg,yes='確定',info=false){return new Promise(res=>{$('#askMsg').textContent=msg;$('#askYes').textContent=yes;$('#askNo').style.display=info?'none':'';$('#askYes').className='btn '+(info?'ok':'bad');$('#mAsk').classList.add('on');
   $('#askYes').onclick=()=>{close('#mAsk');res(true)};$('#askNo').onclick=()=>{close('#mAsk');res(false)}})}
 addEventListener('online',()=>$('#net').style.display='none');addEventListener('offline',()=>$('#net').style.display='block');
 
@@ -407,6 +407,10 @@ async function createBatch(files){
 }
 async function addFilesToBatch(files){
   const parsed=await readFiles(files);
+  // 同名的入庫單已經在這批裡 → 先提醒：只會補資料，不會重複加入
+  const same=parsed.filter(p=>S.files.includes(p.grp)).map(p=>p.grp), fresh=parsed.filter(p=>!S.files.includes(p.grp)).map(p=>p.grp);
+  if(same.length&&!(await ask(`⚠️ 入庫單名稱重複\n${same.join('、')} 已經在這批裡。\n\n只會「更新資料」（補上舊版沒讀到的欄位），不會重複加入，配籃進度不變。`+
+    (fresh.length?`\n\n${fresh.join('、')} 是新的，會追加進來。`:''),'更新'))) return;
   let added=0,dup=0,fixed=0;
   await db.runTransaction(async tx=>{
     const lr=db.collection(C.lines).doc(S.id), br=db.collection(C.batches).doc(S.id);
@@ -420,7 +424,8 @@ async function addFilesToBatch(files){
     tx.set(lr,{lines:cur});
     tx.update(br,{indexed:false,files,lineCount:cur.length,qty:cur.reduce((a,l)=>a+l.qty,0),name:bd.name.replace(/ .*$/,' ')+files.join('、')});
   });
-  toast(`加入 ${added} 行${dup?`，重複 ${dup} 行`:''}${fixed?`，補上 ${fixed} 件的其他編號`:''}`,4000);
+  await ask(added||!dup?`✅ 已追加 ${added} 行`+(dup?`\n（另有 ${dup} 行已經在這批，略過）`:'')+(fixed?`\n補上 ${fixed} 件的其他編號`:''):
+    `✅ 已更新\n這 ${dup} 行原本就在這批，沒有重複加入。\n`+(fixed?`補上 ${fixed} 件的其他編號。`:'資料沒有需要補的地方。'),'好',true);
   await openBatch(S.id);
 }
 
