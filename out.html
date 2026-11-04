@@ -78,15 +78,18 @@
   #cam .bar{padding-bottom:calc(12px + env(safe-area-inset-bottom))!important}
   .zh{font-size:18px;font-weight:800;margin:14px 2px 6px;display:flex;align-items:center;gap:8px}
   .zh i{display:inline-block;width:14px;height:14px;border-radius:4px}
-  #autoHint{font-size:17px;font-weight:700;margin-top:6px;min-height:0}
+  #autoHint{font-size:19px;font-weight:700;margin-top:6px;min-height:0}
   #autoHint.g{color:var(--ok)} #autoHint.w{color:var(--warn)} #autoHint.b{color:var(--bad)} #autoHint.n{color:var(--mute)}
   #sugg{margin-top:6px;border-radius:10px;overflow:hidden;border:1px solid var(--line);display:none}
   #sugg .sg{display:flex;gap:8px;align-items:center;padding:8px;border-top:1px solid var(--line);background:#fff;cursor:pointer}
   #sugg .sg:first-child{border-top:0} #sugg .sg:active{background:#e0f2fe}
-  #sugg img{width:48px;height:48px;object-fit:cover;border-radius:6px;background:#eee;flex:none}
-  #sugg .tx{flex:1;min-width:0;font-size:14px;line-height:1.35;word-break:break-all}
+  #sugg img{width:68px;height:68px;object-fit:cover;border-radius:6px;background:#eee;flex:none}
+  #sugg .tx{flex:1;min-width:0;font-size:18px;line-height:1.4;word-break:break-all;font-weight:600}
+  #sugg .tx .badge{font-size:15px;padding:2px 8px}
+  #sugg .tx .muted{font-size:14px;font-weight:400}
+  #sugg .sg .btn{font-size:18px;padding:12px 16px!important}
   #sugg mark{background:#fde68a;padding:0 1px;border-radius:3px}
-  #sugg .more{padding:8px;text-align:center;color:var(--mute);font-size:13px;background:#f9fafb}
+  #sugg .more{padding:10px;text-align:center;color:var(--mute);font-size:15px;background:#f9fafb}
   #flash{position:fixed;inset:0;z-index:90;pointer-events:none;opacity:0;transition:opacity .25s}
   #inapp{display:none;background:#b91c1c;color:#fff;padding:12px;font-size:15px;line-height:1.5}
 </style>
@@ -707,7 +710,7 @@ function renderSugg(){
   if(!['g','w'].includes($('#autoHint').className)) setHint(r.length===1?'符合 1 件，確認後按「選」':`符合 ${r.length} 件，對照吊牌按「選」，或繼續輸入`,'n');
   el.style.display='block';
   el.innerHTML=top.map((x,i)=>`<div class="sg" data-i="${i}"><img src="${esc(x.c.img)}" loading="lazy" onerror="this.style.visibility='hidden'">
-    <div class="tx">${zozoTag(x.c,raw)}${hl(x.c.sku,raw)} <b>${esc(x.c.size||'')}</b><br><span class="badge" style="background:${zc(x.c.uid)}">尾數${esc(String(x.c.uid).slice(-1))}・${esc(x.c.uid)}</span>${esc(x.c.name||'')}${x.c.sub?` <span class="muted">${esc(x.c.sub)}</span>`:''}</div>
+    <div class="tx">${zozoTag(x.c,raw)}${hl(x.c.sku,raw)} <b>${esc(x.c.size||'')}</b><br><span class="badge" style="background:${zc(x.c.uid)}">尾數${esc(String(x.c.uid).slice(-1))}・${esc(x.c.uid)}</span> ${esc(x.c.name||'')}${x.c.sub?` <span class="muted">${esc(x.c.sub)}</span>`:''}</div>
     <button class="btn ok" style="padding:8px 12px;flex:none">選</button></div>`).join('')+
     (r.length>8?`<div class="more">還有 ${r.length-8} 件符合，再多輸入幾碼</div>`:'');
   el.querySelectorAll('.sg').forEach(d=>d.onclick=()=>{const c=top[+d.dataset.i].c;clearTimeout(autoT);$('#scan').value='';hideSugg();setHint('');suggPick(c)});
