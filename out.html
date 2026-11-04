@@ -182,7 +182,7 @@
     <div id="pvOrders"></div>
   </section>
 
-  <!-- 已產生：訂單 / 打包 -->
+  <!-- 已產生：訂單 / 檢查 -->
   <section id="v-orders" style="display:none">
     <div class="sum" id="odSum"></div>
     <div class="card" style="margin-top:10px">
@@ -207,10 +207,10 @@
       </div>
       <div id="autoHint"></div>
       <div id="sugg"></div>
-      <div class="muted" style="margin-top:6px">一件一件掃，全部打勾才能打包。掃不到的件，點那一件可以手動確認。</div>
+      <div class="muted" style="margin-top:6px">一件一件掃，全部打勾就會自動完成檢查、回到訂單清單。掃不到的件，點那一件可以手動確認。</div>
     </div>
     <div class="card"><div class="list" id="ckList"></div></div>
-    <button class="btn ok big" id="ckDone">✓ 打包完成</button>
+    <button class="btn ok big" id="ckDone">✓ 檢查完成</button>
     <button class="btn gray" id="ckBack" style="width:100%;margin-top:8px">← 回訂單</button>
   </section>
 
@@ -416,7 +416,7 @@ function orderCard(o,{preview=false,packed=false}={}){
   return `<div class="card order" style="border-left-color:${zc(o.uid)};${o.cancel?'opacity:.5':''}" data-oid="${esc(o.oid)}">
     <div style="display:flex;align-items:center;flex-wrap:wrap;gap:4px">
       ${o.no!=null?`<span class="no">${o.no}</span>`:''}<b style="font-size:22px">${esc(o.uid)}</b>&nbsp;${esc(o.name)}
-      <span style="margin-left:auto"><span class="st ${ST[s][1]}">${ST[s][0]}</span>${packed?' <span class="st st-ok">已打包</span>':''}</span></div>
+      <span style="margin-left:auto"><span class="st ${ST[s][1]}">${ST[s][0]}</span>${packed?' <span class="st st-ok">已檢查</span>':''}</span></div>
     <div class="muted">單號 ${esc(o.oid)} ・ ${o.items.length} 件${o.partial?' ・ 部分為舊流程入庫':''}${o.notYet?` ・ 籃內還有 ${o.notYet} 件未到貨`:''}</div>
     <div>${o.codes.map(c=>`<span class="codes">${esc(c)}</span>`).join('')}</div>
     ${(o.siblings||[]).length?mergeNote(o):''}
@@ -426,7 +426,7 @@ function orderCard(o,{preview=false,packed=false}={}){
     ${o.keep.length?`<div class="keep"><b>留在籃子（這次不出）${o.keep.length} 件：</b><div class="list">${o.keep.map(k=>`<div class="it"><img src="${esc(k.img)}" loading="lazy" onerror="this.style.visibility='hidden'"><div class="tx">${esc(dn(k))}</div></div>`).join('')}</div></div>`:''}
     <div class="row" style="margin-top:8px;display:flex;gap:8px">
       ${preview?`<button class="btn ${o.cancel?'ok':'gray'}" data-act="cancel">${o.cancel?'恢復出貨':'取消（不出）'}</button>`
-               :(o.cancel||o.mergeInto?(o.mergeInto?'<span class="muted">併到主單一起核對</span>':''):`<button class="btn ${packed?'gray':'ok'}" data-act="check" style="flex:1">${packed?'✅ 已打包（查看）':'📷 掃描核對'}</button>`)}
+               :(o.cancel||o.mergeInto?(o.mergeInto?'<span class="muted">併到主單一起核對</span>':''):`<button class="btn ${packed?'gray':'ok'}" data-act="check" style="flex:1">${packed?'✅ 已檢查（查看）':'📷 掃描核對'}</button>`)}
     </div></div>`;
 }
 
@@ -632,18 +632,31 @@ function renderCheck(){
     else if(await ask('吊牌掃不到？確認是這件就手動打勾。','手動確認'))setChecked(id,'manual')});
   const all=done===items.length, packed=grp.every(x=>O.packed[x.oid]);
   $('#ckDone').disabled=!all;$('#ckDone').style.opacity=all?1:.4;
-  $('#ckDone').textContent=packed?'已打包（按這裡取消）':all?'✓ 全部正確，打包完成':`還有 ${items.length-done} 件沒核對`;
+  $('#ckDone').textContent=packed?'已檢查（按這裡取消）':all?'✓ 全部正確，檢查完成':`還有 ${items.length-done} 件沒核對`;
 }
 function setChecked(id,v){
-  O.checked=O.checked||{};O.checked[id]=v;renderCheck();
-  db.collection(C.out).doc(O.id).update(new FP('checked',id),v||FV.delete()).catch(e=>toast('同步失敗：'+e.message,4000));
+  O.checked=O.checked||{};O.checked[id]=v;
+  const b=db.batch(), ref=db.collection(C.out).doc(O.id);
+  b.update(ref,new FP('checked',id),v||FV.delete());
+  const main=CK&&O.orders.find(x=>x.oid===CK), grp=main?groupOf(main):[];
+  const items=grp.flatMap(o=>o.items), all=items.length&&items.every(it=>O.checked[it.id]);
+  if(!v&&grp.some(x=>O.packed[x.oid])){grp.forEach(x=>{O.packed[x.oid]=false;b.update(ref,new FP('packed',x.oid),false)})}   // 取消一件 → 這單改回未檢查
+  if(v&&all&&!grp.every(x=>O.packed[x.oid])){grp.forEach(x=>{O.packed[x.oid]=true;b.update(ref,new FP('packed',x.oid),true)});autoDone(main)}
+  b.commit().catch(e=>toast('同步失敗：'+e.message,4000));
+  renderCheck();
+}
+// 全部打勾 → 顯示完成，1.2 秒後自動回到訂單清單
+function autoDone(main){
+  const r=$('#result');r.className='';r.style.display='block';r.style.background='var(--ok)';clearTimeout(r._h);
+  r.innerHTML=`<div class="nm">✅ 單 ${main.no} 檢查完成</div><div class="meta">${esc(main.uid)} ${esc(main.name)}・自動回到訂單清單</div>`;
+  setTimeout(()=>{if(CK!==main.oid)return;clearResult();CK=null;$('#find').value='';show('orders');renderOut();window.scrollTo({top:0});setTimeout(()=>$('#find').focus(),80)},1200);
 }
 function onScan(raw){
   if(typeof hideSugg==='function')hideSugg();
   const code=normCode(raw); $('#scan').value=''; if(!code) return;
   const main=O.orders.find(x=>x.oid===CK), grp=groupOf(main), inGrp=new Set(grp.map(x=>x.oid)), chk=O.checked||{};
   const c=matchItems(code), mine=c.filter(x=>inGrp.has(x.o.oid)), open=mine.filter(x=>!chk[x.it.id]);
-  if(open.length){setChecked(open[0].it.id,true);beep(true);
+  if(open.length){const wasDone=false;setChecked(open[0].it.id,true);beep(true);if(!CK||$('#result').innerHTML.includes('檢查完成'))return;
     const r=$('#result');r.className='';r.style.display='block';r.style.background='var(--ok)';
     r.innerHTML=`<div class="nm">✓ 正確</div><div class="meta">${esc(open[0].it.sku)}</div>`;clearTimeout(r._h);r._h=setTimeout(clearResult,1500);return}
   if(mine.length) return showErr('這件已經掃過了','同一件掃了兩次？或是多了一件');
@@ -685,7 +698,7 @@ function suggSource(){
   const main=O.orders.find(x=>x.oid===CK), chk=O.checked||{}, grp=groupOf(main);
   return grp.flatMap(o=>o.items.filter(it=>!chk[it.id]).map(it=>Object.assign(it,{uid:o.uid,name:o.name,pref:1,sub:grp.length>1?'單 '+o.no:'',size:(it.sku.normalize('NFKC').match(/(?:有庫存|庫存緊張|預約)\/?(.*)$/)||['',''])[1]})));
 }
-function suggPick(it){setChecked(it.id,true);beep(true);const r=$('#result');r.className='';r.style.display='block';r.style.background='var(--ok)';
+function suggPick(it){setChecked(it.id,true);beep(true);if($('#result').innerHTML.includes('檢查完成'))return;const r=$('#result');r.className='';r.style.display='block';r.style.background='var(--ok)';
   r.innerHTML=`<div class="nm">✓ 正確</div><div class="meta">${esc(it.sku)}</div>`;clearTimeout(r._h);r._h=setTimeout(clearResult,1500)}
 
 /* ================= 輸入時即時列出候選（模糊比對） =================
@@ -736,7 +749,7 @@ $('#ckDone').onclick=async()=>{const main=O.orders.find(x=>x.oid===CK),grp=group
   const upd={};grp.forEach(x=>upd['packed.'+x.oid]=!packed);
   // FieldPath 安全寫法
   const b=db.batch();grp.forEach(x=>b.update(db.collection(C.out).doc(O.id),new FP('packed',x.oid),!packed));await b.commit().catch(e=>toast(e.message));
-  if(!packed){toast(`單 ${main.no} 打包完成`);CK=null;$('#find').value='';show('orders');renderOut()}};
+  if(!packed){toast(`單 ${main.no} 檢查完成`);CK=null;$('#find').value='';show('orders');renderOut()}};
 
 /* ============ 出庫清單 / 開啟 ============ */
 function stopListen(){unsub.forEach(f=>f());unsub=[]}
@@ -750,7 +763,7 @@ async function showList(){
     const ts=x=>x.data().createdAt&&x.data().createdAt.toDate?x.data().createdAt.toDate().getTime():0;
     const docs=qs.docs.sort((a,b)=>ts(b)-ts(a)).slice(0,30);
     $('#outList').innerHTML=docs.length?docs.map(d=>{const x=d.data(),n=x.orders.filter(o=>!o.cancel).length,p=Object.values(x.packed||{}).filter(Boolean).length;
-      return `<div class="card" data-id="${d.id}" style="cursor:pointer;${x.void?'opacity:.45':''}"><div style="display:flex;justify-content:space-between"><b style="font-size:18px;${x.void?'text-decoration:line-through':''}">${esc(V.name)}${esc(x.name)}</b><span>${x.void?'已作廢':`打包 ${p}/${n}`}</span></div>
+      return `<div class="card" data-id="${d.id}" style="cursor:pointer;${x.void?'opacity:.45':''}"><div style="display:flex;justify-content:space-between"><b style="font-size:18px;${x.void?'text-decoration:line-through':''}">${esc(V.name)}${esc(x.name)}</b><span>${x.void?'已作廢':`檢查 ${p}/${n}`}</span></div>
       <div class="muted">單號 ${x.start}～${x.start+x.orders.length-1} ・ ${esc(x.createdBy||'')}</div></div>`}).join(''):'<div class="empty">還沒有出庫紀錄</div>';
     $('#outList').querySelectorAll('[data-id]').forEach(el=>el.onclick=()=>openOut(el.dataset.id));
   }catch(e){$('#outList').innerHTML=`<div class="empty">讀取失敗：${esc(e.message)}</div>`}
@@ -766,9 +779,9 @@ function renderOut(){
   ['#dlMain','#dlSG','#printBtn','#voidBtn'].forEach(sel=>{$(sel).disabled=isVoid;$(sel).style.opacity=isVoid?.4:1});
   $('#voidCard').querySelector('h3').textContent=isVoid?`已作廢（${O.voidBy||''} ${O.voidAt?new Date(O.voidAt).toLocaleString('zh-TW'):''}）`:'作廢這次出庫';
   const act=O.orders.filter(o=>!o.cancel), p=act.filter(o=>O.packed[o.oid]).length;
-  $('#title').textContent=V.name+O.name;$('#prog').textContent=`打包 ${p}/${act.length}`;
+  $('#title').textContent=V.name+O.name;$('#prog').textContent=`檢查 ${p}/${act.length}`;
   $('#odSum').innerHTML=(isVoid?'<div class="warnbox" style="grid-column:1/-1">⚠️ 這次出庫已作廢，請不要照這份出貨</div>':'')+sumHtml(O.orders);
-  const F=[['all','全部狀態'],['todo','未打包'],['done','已打包'],['bad','🔴 不能出'],['part','🟡 部分出'],['none','⚪ 無紀錄']];
+  const F=[['all','全部狀態'],['todo','未檢查'],['done','已檢查'],['bad','🔴 不能出'],['part','🟡 部分出'],['none','⚪ 無紀錄']];
   $('#stSel').innerHTML=F.map(([k,t])=>`<option value="${k}" ${filt===k?'selected':''}>${t}</option>`).join('');
   const zones=[...new Set(O.orders.map(o=>zn(o.uid)))].sort();
   $('#zoneSel').innerHTML=`<option value="ALL">全部區</option>`+zones.map(z=>{const ls=O.orders.filter(o=>zn(o.uid)===z&&!o.cancel),d=ls.filter(o=>O.packed[o.oid]).length;
@@ -777,7 +790,13 @@ function renderOut(){
   let list=O.orders;
   if(q) list=list.filter(o=>o.uid===q||o.oid===q||String(o.no)===q||o.uid.endsWith(q));
   else list=list.filter(o=>(zf==='ALL'||zn(o.uid)===zf)&&(filt==='all'||(filt==='todo'&&!o.cancel&&!O.packed[o.oid])||(filt==='done'&&O.packed[o.oid])||o.status===filt));
-  $('#odList').innerHTML=withZones(list,o=>orderCard(o,{packed:!!O.packed[o.oid]}))||'<div class="empty">沒有符合的單</div>';
+  const isDone=o=>!o.cancel&&(O.packed[o.oid]||(o.mergeInto&&O.packed[o.mergeInto]));
+  const todo=list.filter(o=>!isDone(o)), dn_=list.filter(isDone);
+  const mini=o=>`<div class="card order" data-oid="${esc(o.oid)}" style="border-left-color:${zc(o.uid)};padding:8px 12px;opacity:.8;display:flex;align-items:center;gap:8px">
+    <b style="font-size:18px">${o.no}</b><b>${esc(o.uid)}</b><span style="flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${esc(o.name)}${o.mergeInto?' <span class="muted">（併單）</span>':''}</span>
+    <span class="st st-ok">已檢查</span>${o.mergeInto?'':'<button class="btn gray" data-act="check" style="padding:6px 10px;font-size:14px">查看</button>'}</div>`;
+  $('#odList').innerHTML=(withZones(todo,o=>orderCard(o,{packed:false}))||(dn_.length?'<div class="empty">這裡的單都檢查完了 ✅</div>':''))+
+    (dn_.length?`<div class="zh" style="margin-top:22px">✅ 已檢查（${dn_.length} 單）</div>`+dn_.map(mini).join(''):'')||'<div class="empty">沒有符合的單</div>';
   $('#odList').querySelectorAll('[data-act=check]').forEach(b=>b.onclick=()=>openCheck(b.closest('.order').dataset.oid));
   if(CK&&$('#v-check').style.display==='block') renderCheck();
   const merged=act.filter(o=>o.mergeInto);
