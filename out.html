@@ -348,7 +348,7 @@ function parseDispatch(wb){
   const rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:false});
   const h=rows[0].map(x=>String(x).trim()), ci=n=>h.indexOf(n);
   const need=['id','twShippingOrder.id','twShippingOrder.shippingInfo.recipient','thirdPartyIds','user.id','itemNoCode','img'];
-  const miss=need.filter(n=>ci(n)<0); if(miss.length) throw new Error('缺少欄位：'+miss.join('、'));
+  const miss=need.filter(n=>ci(n)<0); if(miss.length){if(ci('jpShippingNo')>=0||ci('user_id')>=0)throw new Error('這是入庫單（或補件），請到入庫頁上傳');throw new Error('缺少欄位：'+miss.join('、'))}
   const out=[];
   rows.slice(1).forEach((r,i)=>{const id=String(r[ci('id')]).trim(); if(!id) return;
     out.push({id,oid:String(r[ci('twShippingOrder.id')]).trim(),name:String(r[ci('twShippingOrder.shippingInfo.recipient')]).trim(),
@@ -359,11 +359,23 @@ function parseDispatch(wb){
   return out;
 }
 
+
+// 讀檔前先判斷是不是真的 Excel／CSV，給看得懂的錯誤訊息
+async function readBook(file){
+  const buf=await file.arrayBuffer(), u8=new Uint8Array(buf.slice(0,8));
+  const zip=u8[0]===0x50&&u8[1]===0x4B, ole=u8[0]===0xD0&&u8[1]===0xCF;
+  if(!zip&&!ole){
+    const head=new TextDecoder().decode(buf.slice(0,4000)).trim().toLowerCase();
+    if(head.startsWith('<')&&!head.includes('<table'))
+      throw new Error(`「${file.name}」不是 Excel 檔，看起來是一個網頁（常見原因：從 Google 試算表連結用瀏覽器下載，存到的是網頁）。請改用入庫頁的「🔗 貼上 Google 試算表連結」，或用 Google 試算表 App「另存為 Excel」`);
+  }
+  return XLSX.read(buf,{type:'array'});
+}
 /* ============ 對照入庫，判斷每張單的狀態 ============ */
 async function buildPreview(file){
   toast('同步入庫資料…',8000);
   await syncIndex();
-  const rows=parseDispatch(XLSX.read(await file.arrayBuffer(),{type:'array'}));
+  const rows=parseDispatch(await readBook(file));
   // 依訂單分組（保持排序後的順序）
   const orders=[],om={};
   for(const r of rows){

@@ -381,7 +381,7 @@ function parseWorkbook(wb,fname){
   const h=rows[0].map(x=>String(x).trim()), ci=n=>h.indexOf(n);
   const need=['id','itemNoCode','quantity','user_id','jpShippingNo','user.name','img'];
   const miss=need.filter(n=>ci(n)<0);
-  if(miss.length) throw new Error(fname+' 缺少欄位：'+miss.join('、'));
+  if(miss.length){if(ci('twShippingOrder.id')>=0)throw new Error(`「${fname}」是出庫單，請到出庫頁上傳`);throw new Error(fname+' 缺少欄位：'+miss.join('、'))}
   const lines=[];
   for(const r of rows.slice(1)){
     const id=String(r[ci('id')]).trim(); if(!id) continue;
@@ -396,7 +396,7 @@ function parseWorkbook(wb,fname){
 }
 async function readFiles(files){
   const out=[];
-  for(const f of files) out.push(parseWorkbook(f.wb||XLSX.read(await f.arrayBuffer(),{type:'array'}),f.name));   // f.wb：從 Google 試算表連結讀進來的
+  for(const f of files) out.push(parseWorkbook(f.wb||await readBook(f),f.name));   // f.wb：從 Google 試算表連結讀進來的
   return out;
 }
 
@@ -430,6 +430,18 @@ $('#lkGo').onclick=async()=>{
   }catch(e){$('#lkMsg').textContent='⚠️ '+e.message}
 };
 
+
+// 讀檔前先判斷是不是真的 Excel／CSV，給看得懂的錯誤訊息
+async function readBook(file){
+  const buf=await file.arrayBuffer(), u8=new Uint8Array(buf.slice(0,8));
+  const zip=u8[0]===0x50&&u8[1]===0x4B, ole=u8[0]===0xD0&&u8[1]===0xCF;
+  if(!zip&&!ole){
+    const head=new TextDecoder().decode(buf.slice(0,4000)).trim().toLowerCase();
+    if(head.startsWith('<')&&!head.includes('<table'))
+      throw new Error(`「${file.name}」不是 Excel 檔，看起來是一個網頁（常見原因：從 Google 試算表連結用瀏覽器下載，存到的是網頁）。請改用入庫頁的「🔗 貼上 Google 試算表連結」，或用 Google 試算表 App「另存為 Excel」`);
+  }
+  return XLSX.read(buf,{type:'array'});
+}
 /* ================= 批次：建立 / 清單 / 開啟 ================= */
 async function createBatch(files){
   const parsed=await readFiles(files);
