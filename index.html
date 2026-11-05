@@ -384,10 +384,11 @@ function parseWorkbook(wb,fname){
   if(miss.length){if(ci('twShippingOrder.id')>=0)throw new Error(`「${fname}」是出庫單，請到出庫頁上傳`);throw new Error(fname+' 缺少欄位：'+miss.join('、'))}
   const lines=[];
   for(const r of rows.slice(1)){
-    const id=String(r[ci('id')]).trim(); if(!id) continue;
+    const nid=v=>String(v??'').trim().replace(/\.0+$/,'');   // 試算表連結讀進來的數字可能是 237322.0
+    const id=nid(r[ci('id')]); if(!id) continue;
     const sku=cleanSku(r[ci('itemNoCode')]), img=String(r[ci('img')]).trim(), size=parseSize(sku);
-    lines.push({id,sku,qty:Math.max(1,parseInt(r[ci('quantity')])||1),uid:String(r[ci('user_id')]).trim(),
-      name:String(r[ci('user.name')]).trim(),box:grp,jp:String(r[ci('jpShippingNo')]).trim(),
+    lines.push({id,sku,qty:Math.max(1,parseInt(r[ci('quantity')])||1),uid:nid(r[ci('user_id')]),
+      name:String(r[ci('user.name')]).trim(),box:grp,jp:nid(r[ci('jpShippingNo')]),
       st:ci('status')>=0?String(r[ci('status')]).trim():'',alt:ci('itemNoComplete')>=0?altOf(r[ci('itemNoComplete')]).filter(x=>!sku.startsWith('E'+x)):[],   // 跟主編號相同的不重複顯示
       img,size,sk:sizeKey(size),color:parseColor(sku),...parseKey(img)});
   }

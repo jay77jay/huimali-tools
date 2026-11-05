@@ -161,6 +161,7 @@
   <section id="v-list" style="display:none">
     <div class="card">
       <button class="btn big" onclick="$('#upFile').click()">＋ 上傳出庫單</button>
+      <button class="btn gray big" style="margin-top:8px" onclick="openLink()">🔗 貼上 Google 試算表連結</button>
       <input type="file" id="upFile" accept=".xlsx,.xls" style="display:none">
       <p class="muted" style="margin:8px 0 0">上傳後會先檢查每張單的籃子狀態和 7-11 單號，確認後才產生檔案。</p>
     </div>
@@ -239,6 +240,14 @@
 <div id="cam"><video id="video" playsinline muted></video><div class="hint"></div>
   <div class="bar"><span class="muted" style="flex:1;color:#ccc" id="camMsg">對準吊牌條碼</span><button class="btn gray" id="camClose">關閉</button></div>
 </div>
+<div class="modal" id="mLink"><div class="sheet">
+  <h2>貼上 Google 試算表連結（出庫單）</h2>
+  <p class="muted" style="margin-top:0">廠商在 LINE 傳的出庫單試算表連結，長按 → 拷貝，貼到下面。</p>
+  <label class="muted">連結</label>
+  <textarea id="lkUrl" rows="3" placeholder="https://docs.google.com/spreadsheets/d/…"></textarea>
+  <p class="muted" id="lkMsg" style="color:var(--bad)"></p>
+  <div class="row"><button class="btn gray" id="lkCancel">取消</button><button class="btn" id="lkGo">讀取</button></div>
+</div></div>
 <div class="modal" id="mAsk"><div class="sheet"><h2 id="askMsg" style="white-space:pre-line"></h2><div class="row"><button class="btn gray" id="askNo">取消</button><button class="btn bad" id="askYes">確定</button></div></div></div>
 <div class="toast" id="toast"></div>
 <div id="net" style="position:fixed;top:0;left:0;right:0;z-index:80;background:#b45309;color:#fff;text-align:center;font-size:13px;padding:3px;display:none">離線中</div>
@@ -350,9 +359,10 @@ function parseDispatch(wb){
   const need=['id','twShippingOrder.id','twShippingOrder.shippingInfo.recipient','thirdPartyIds','user.id','itemNoCode','img'];
   const miss=need.filter(n=>ci(n)<0); if(miss.length){if(ci('jpShippingNo')>=0||ci('user_id')>=0)throw new Error('這是入庫單（或補件），請到入庫頁上傳');throw new Error('缺少欄位：'+miss.join('、'))}
   const out=[];
-  rows.slice(1).forEach((r,i)=>{const id=String(r[ci('id')]).trim(); if(!id) return;
-    out.push({id,oid:String(r[ci('twShippingOrder.id')]).trim(),name:String(r[ci('twShippingOrder.shippingInfo.recipient')]).trim(),
-      tp:String(r[ci('thirdPartyIds')]).trim(),uid:String(r[ci('user.id')]).trim(),sku:String(r[ci('itemNoCode')]).trim(),img:String(r[ci('img')]).trim(),i})});
+  const nid=v=>String(v??'').trim().replace(/\.0+$/,'');   // 試算表連結讀進來的數字可能是 61466.0
+  rows.slice(1).forEach((r,i)=>{const id=nid(r[ci('id')]); if(!id) return;
+    out.push({id,oid:nid(r[ci('twShippingOrder.id')]),name:String(r[ci('twShippingOrder.shippingInfo.recipient')]).trim(),
+      tp:String(r[ci('thirdPartyIds')]).trim(),uid:nid(r[ci('user.id')]),sku:String(r[ci('itemNoCode')]).trim(),img:String(r[ci('img')]).trim(),i})});
   if(!out.length) throw new Error('檔案裡沒有資料');
   // 跟 BAS 一樣：先依 ID 尾數，再依 ID（數字），同 ID 維持原順序
   out.sort((a,b)=>(+a.uid.slice(-1)-+b.uid.slice(-1))||(+a.uid-+b.uid)||(a.i-b.i));
@@ -362,6 +372,7 @@ function parseDispatch(wb){
 
 // 讀檔前先判斷是不是真的 Excel／CSV，給看得懂的錯誤訊息
 async function readBook(file){
+  if(file.wb) return file.wb;   // 從 Google 試算表連結讀進來的
   const buf=await file.arrayBuffer(), u8=new Uint8Array(buf.slice(0,8));
   const zip=u8[0]===0x50&&u8[1]===0x4B, ole=u8[0]===0xD0&&u8[1]===0xCF;
   if(!zip&&!ole){
@@ -371,6 +382,27 @@ async function readBook(file){
   }
   return XLSX.read(buf,{type:'array'});
 }
+/* ============ Google 試算表連結 → 當成出庫單 ============ */
+function openLink(){$('#lkUrl').value='';$('#lkMsg').textContent='';$('#mLink').classList.add('on');setTimeout(()=>$('#lkUrl').focus(),80)}
+$('#lkCancel').onclick=()=>close('#mLink');
+async function readSheetLink(url,name){
+  const id=(url.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/)||[])[1];
+  if(!id) throw new Error('看不懂這個連結，請貼 docs.google.com/spreadsheets 開頭的連結');
+  const gid=(url.match(/[#&?]gid=(\d+)/)||[])[1];
+  const api=`https://docs.google.com/spreadsheets/d/${id}/gviz/tq?tqx=out:csv&headers=1${gid?`&gid=${gid}`:''}`;
+  let txt;
+  try{const r=await fetch(api);txt=await r.text();if(!r.ok)throw 0}catch(e){throw new Error('讀不到這個試算表。請確認廠商有開「知道連結的任何人都能檢視」，或改用下載檔案的方式')}
+  if(/^\s*<(!doctype|html)/i.test(txt)) throw new Error('這個試算表沒有公開分享（需要登入才能看）。請廠商開「知道連結的任何人都能檢視」，或改用下載檔案的方式');
+  const wb=XLSX.read(txt,{type:'string',raw:true});
+  return {name:(name||'補件').replace(/\.xlsx?$/i,''),wb};
+}
+$('#lkGo').onclick=async()=>{
+  $('#lkMsg').textContent='讀取中…';
+  try{const d=new Date(),f=await readSheetLink($('#lkUrl').value.trim(),`出庫單${d.getMonth()+1}${String(d.getDate()).padStart(2,'0')}`);
+    parseDispatch(f.wb);close('#mLink');startPreview(f)}
+  catch(e){$('#lkMsg').textContent='⚠️ '+e.message}
+};
+
 /* ============ 對照入庫，判斷每張單的狀態 ============ */
 async function buildPreview(file){
   toast('同步入庫資料…',8000);
@@ -858,14 +890,15 @@ $('#find').addEventListener('keydown',e=>{if(e.key!=='Enter')return;const q=$('#
   const hit=[...new Set(O.orders.filter(o=>!o.cancel&&(o.uid===q||String(o.no)===q||o.oid===q)).map(o=>o.mergeInto||o.oid))];if(hit.length===1)openCheck(hit[0])});
 $('#copyRep').onclick=async()=>{try{await navigator.clipboard.writeText($('#repText').textContent);toast('已複製')}catch(e){toast('複製失敗，請長按手動複製')}};
 
-$('#upFile').onchange=async e=>{const f=e.target.files[0];e.target.value='';if(!f)return;
+$('#upFile').onchange=e=>{const f=e.target.files[0];e.target.value='';if(f)startPreview(f)};
+async function startPreview(f){
   try{PV=await buildPreview(f);
     const c=(await db.collection(C.meta).doc('outCounter_'+VID).get()).data()||{};
     // 單號每天從 1 開始；同一天的第二批才接續
     const sameDay=c.lastAt&&new Date(c.lastAt).toDateString()===new Date().toDateString();
     $('#lastNo').textContent=sameDay?`今天已用到 ${c.last}，接續`:`今天第一批，從 1 開始${c.lastAt?`（上次 ${new Date(c.lastAt).getMonth()+1}/${new Date(c.lastAt).getDate()} 用到 ${c.last}）`:''}`;
     $('#startNo').value=sameDay?(c.last||0)+1:1;toast('',1);showPreview();
-  }catch(err){toast('讀取失敗：'+err.message,5000)}};
+  }catch(err){toast('讀取失敗：'+err.message,5000)}}
 $('#genBtn').onclick=()=>generate().catch(e=>toast('產生失敗：'+e.message,5000));
 $('#pvCancel').onclick=()=>{PV=null;showList()};
 $('#backBtn').onclick=()=>showList();
