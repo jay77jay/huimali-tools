@@ -222,7 +222,8 @@
     <div class="card">
       <h3 style="margin:0 0 6px">回報文字</h3>
       <pre class="rep" id="repText"></pre>
-      <button class="btn" id="copyRep">複製回報文字</button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="copyRep">複製回報文字</button><button class="btn" id="shareRep" style="background:#06c755">文字＋照片分享（LINE）</button></div>
+      <p class="muted" style="margin:6px 0 0">分享時照片左上角會蓋上例外編號，對應文字裡的「1.」「2.」…；文字同時複製好，LINE 若只收到照片，在對話框長按貼上即可。</p>
     </div>
     <div class="card">
       <button class="btn gray" onclick="$('#addFile').click()">＋ 加入入庫單 / 補資料</button>
@@ -780,7 +781,7 @@ function renderReport(){
   const {t,d}=totals();
   const lines=[`【${V.name}入庫回報】${S.files.join('、')}`,`已到 ${d} / ${t} 件`];
   if(miss.length){lines.push('','■ 入庫單上有、但沒到貨：');Object.keys(g).forEach(b=>g[b].forEach(l=>lines.push(`・${l.box}｜${l.uid} ${l.name}｜${dn(l)}${rem(l)>1?' ×'+rem(l):''}${l.st&&l.st!=='onFlight'?' ['+l.st+']':''}`)))}
-  if(S.ex.length){lines.push('','■ 例外（照片另附）：');S.ex.forEach((e,i)=>lines.push(`${i+1}. ${e.type}｜${e.box}｜${e.note}`))}
+  if(S.ex.length){lines.push('','■ 例外（照片左上角編號對應）：');S.ex.forEach((e,i)=>lines.push(`${i+1}. ${e.type}｜${e.box}｜${e.note}${e.photo?'（有照片）':''}`))}
   if(!miss.length&&!S.ex.length) lines.push('全部到齊，無例外。');
   $('#repText').textContent=lines.join('\n');
   renderSG();
@@ -970,6 +971,27 @@ $('#closeBtn').onclick=async()=>{
     await db.collection(C.batches).doc(S.id).update({closed:on});showList();
   }
 };
+/* 例外照片蓋編號 → 分享到 LINE */
+function stampPhoto(e,n){return new Promise(res=>{const img=new Image();img.onload=()=>{
+  const c=document.createElement('canvas');c.width=img.width;c.height=img.height;const x=c.getContext('2d');x.drawImage(img,0,0);
+  const fs=Math.max(28,Math.round(img.width/14)),pad=fs*.4;x.font=`bold ${fs}px sans-serif`;
+  const lab=`例外 ${n}`,sub=`${e.box}｜${(e.note||'').slice(0,24)}`;
+  x.fillStyle='#dc2626';x.fillRect(0,0,x.measureText(lab).width+pad*2,fs+pad*2);x.fillStyle='#fff';x.textBaseline='top';x.fillText(lab,pad,pad);
+  const fs2=Math.round(fs*.55);x.font=`${fs2}px sans-serif`;const w2=Math.min(img.width,x.measureText(sub).width+pad*2);
+  x.fillStyle='rgba(0,0,0,.6)';x.fillRect(0,fs+pad*2,w2,fs2+pad);x.fillStyle='#fff';x.fillText(sub,pad,fs+pad*2+pad/2);
+  c.toBlob(b=>res(new File([b],`例外${n}.jpg`,{type:'image/jpeg'})),'image/jpeg',.85)};img.onerror=()=>res(null);img.src=e.photo})}
+$('#shareRep').onclick=async()=>{
+  const text=$('#repText').textContent;
+  try{await navigator.clipboard.writeText(text)}catch(e){}
+  const files=(await Promise.all(S.ex.map((e,i)=>e.photo?stampPhoto(e,i+1):null))).filter(Boolean);
+  if(!files.length){toast('沒有例外照片，文字已複製，可直接貼到 LINE',3000);return}
+  if(navigator.canShare&&navigator.canShare({files})){
+    try{await navigator.share({files,text});toast('文字也已複製，LINE 沒帶到文字的話長按貼上',3500)}
+    catch(e){if(e.name!=='AbortError')toast('分享失敗：'+e.message,4000)}
+    return}
+  // 電腦/不支援分享：下載照片
+  files.forEach(f=>{const a=document.createElement('a');a.href=URL.createObjectURL(f);a.download=f.name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),3000)});
+  toast(`這台裝置不支援直接分享：已下載 ${files.length} 張照片、文字已複製`,4000)};
 $('#copyRep').onclick=async()=>{try{await navigator.clipboard.writeText($('#repText').textContent);toast('已複製，可貼到 LINE')}catch(e){toast('複製失敗，請長按文字手動複製')}};
 $('#showClosed').onclick=()=>{showClosed=!showClosed;$('#showClosed').textContent=showClosed?'隱藏已結案':'顯示已結案';showList()};
 $('#backBtn').onclick=()=>showList();
