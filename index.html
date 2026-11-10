@@ -238,7 +238,7 @@
 
 <div class="modal" id="mPick"><div class="sheet" id="mPickBody"></div></div>
 <div class="modal" id="mEx"><div class="sheet">
-  <h2>記錄例外</h2>
+  <h2 id="exTitle">記錄例外</h2>
   <label class="muted">類型</label>
   <select id="exType"><option>入庫單上沒有（多出）</option><option>名稱/標籤不符</option><option>數量不符</option><option>其他</option></select>
   <label class="muted" style="display:block;margin-top:8px">入庫單</label>
@@ -770,8 +770,8 @@ function renderBaskets(){
 function renderReport(){
   if(!S) return;
   $('#exList').innerHTML=S.ex.length?S.ex.map((e,i)=>`<div class="it" style="flex-wrap:wrap">
-    <div class="tx"><b>${esc(e.type)}</b> ・ ${esc(e.box)} <span class="muted">${esc(e.by||'')}</span><br>${esc(e.note)}</div>
-    <button class="btn gray" onclick="delEx(${i})">刪除</button>
+    <div class="tx"><b>${esc(e.type)}</b> ・ ${esc(e.box)} <span class="muted">${esc(e.by||'')}${e.editedBy?`（${esc(e.editedBy)} 修改過）`:''}</span><br>${esc(e.note)}</div>
+    <button class="btn gray" onclick="editEx(${i})">修改</button><button class="btn gray" onclick="delEx(${i})">刪除</button>
     ${e.photo?`<img src="${e.photo}" class="exph" style="width:100%;height:auto">`:''}</div>`).join(''):'<div class="muted">沒有例外</div>';
   const miss=S.lines.filter(l=>rem(l)>0);
   const g={};miss.forEach(l=>(g[l.box]=g[l.box]||[]).push(l));
@@ -805,9 +805,20 @@ $('#lblBtn').onclick=()=>{
 };
 
 /* ================= 例外 ================= */
+let exEditId=null;   // 修改中的例外（null＝新增）
 function openEx(note=''){
+  exEditId=null;$('#exTitle').textContent='記錄例外';
   $('#exBox').innerHTML=boxes().map(b=>`<option ${b===curBox?'selected':''}>${esc(b)}</option>`).join('')+'<option>不確定</option>';
   $('#exNote').value=note;$('#exPhoto').value='';$('#exPrev').style.display='none';exPhotoData=null;
+  $('#mEx').classList.add('on');
+}
+function editEx(i){
+  const e=S.ex[i];exEditId=e._id;$('#exTitle').textContent='修改例外';
+  const opts=[...boxes(),'不確定'];if(e.box&&!opts.includes(e.box))opts.unshift(e.box);
+  $('#exBox').innerHTML=opts.map(b=>`<option ${b===e.box?'selected':''}>${esc(b)}</option>`).join('');
+  if(![...$('#exType').options].some(o=>o.value===e.type))$('#exType').insertAdjacentHTML('beforeend',`<option>${esc(e.type)}</option>`);
+  $('#exType').value=e.type;$('#exNote').value=e.note||'';$('#exPhoto').value='';
+  exPhotoData=e.photo||null;$('#exPrev').src=exPhotoData||'';$('#exPrev').style.display=exPhotoData?'block':'none';
   $('#mEx').classList.add('on');
 }
 $('#exPhoto').onchange=e=>{
@@ -820,8 +831,12 @@ $('#exPhoto').onchange=e=>{
 };
 $('#exCancel').onclick=()=>close('#mEx');
 $('#exSave').onclick=()=>{
-  db.collection(C.ex).add({bid:S.id,type:$('#exType').value,box:$('#exBox').value,note:$('#exNote').value.trim(),photo:exPhotoData||null,t:Date.now(),by:me()})
-    .catch(e=>toast('儲存失敗：'+e.message,4000));
+  const v={type:$('#exType').value,box:$('#exBox').value,note:$('#exNote').value.trim(),photo:exPhotoData||null};
+  if(exEditId){
+    db.collection(C.ex).doc(exEditId).update({...v,editedBy:me(),editedAt:Date.now()}).catch(e=>toast('儲存失敗：'+e.message,4000));
+    close('#mEx');toast('已修改');exEditId=null;return;
+  }
+  db.collection(C.ex).add({bid:S.id,...v,t:Date.now(),by:me()}).catch(e=>toast('儲存失敗：'+e.message,4000));
   close('#mEx');clearResult();toast('已記錄例外');
 };
 $('#addExBtn').onclick=()=>openEx();
