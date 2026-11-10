@@ -1056,7 +1056,8 @@ function suggest(q){
   q=nrm(q); if(q.length<2) return [];
   const out=[];
   for(const c of suggSource()){const K=keysOf(c);let s=0;
-    if(K.keys.some(x=>x===q))s=4;else if(K.keys.some(x=>x.startsWith(q)))s=3;else if(K.full.includes(q))s=1;
+    if(K.keys.some(x=>x===q))s=4;else if(K.keys.some(x=>x.startsWith(q)))s=3;else if(q.length>=10&&K.keys.some(x=>x.length>=8&&/^\d+$/.test(x)&&q.startsWith(x)))s=3;   // 吊牌條碼＝貨號＋顏色尺寸碼（3426528001+01）
+    else if(K.full.includes(q))s=1;
     if(s)out.push({c,s})}
   return out.sort((a,b)=>(b.s-a.s)||(b.c.pref-a.c.pref)||(+String(a.c.uid).slice(-1)-+String(b.c.uid).slice(-1))||(+a.c.uid-+b.c.uid));
 }
