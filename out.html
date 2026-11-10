@@ -429,7 +429,9 @@ async function buildPreview(file){
   await Promise.all(allCodes.map(async c=>{const d=await db.collection(C.codes).doc(VID+'_'+c).get();if(d.exists)used[c]=d.data()}));
   const dispatchIds=new Set(rows.map(r=>r.id));
   // 同一個籃子（同 ID）這次有好幾張單
-  const byU={};orders.forEach(o=>(byU[o.uid]=byU[o.uid]||[]).push(o.oid));
+  // 併單：同一個 ID「而且收件人同名」才合併。同 ID 不同收件人＝寄給不同的人，一定要分開寄
+  const mk=o=>o.uid+'|'+o.name.replace(/\s+/g,'');
+  const byU={};orders.forEach(o=>(byU[mk(o)]=byU[mk(o)]||[]).push(o.oid));
   for(const o of orders){
     const idx={};(byUid[o.uid]||[]).forEach(x=>idx[x.id]=x);
     let found=0,miss=0,shipped=0;
@@ -441,8 +443,8 @@ async function buildPreview(file){
     o.keep=(byUid[o.uid]||[]).filter(x=>!dispatchIds.has(x.id)&&!x.shipped&&got(x)).map(x=>({id:x.id,sku:x.sku,alt:x.alt||[],img:x.img,box:x.box}));
     o.notYet=(byUid[o.uid]||[]).filter(x=>!dispatchIds.has(x.id)&&!x.shipped&&!got(x)).length;
     o.dup=o.codes.filter(c=>used[c]).map(c=>({c,...used[c]}));
-    o.siblings=byU[o.uid].filter(x=>x!==o.oid);
-    o.mergeInto=byU[o.uid][0]!==o.oid?byU[o.uid][0]:null;   // 併到最上面那張
+    o.siblings=byU[mk(o)].filter(x=>x!==o.oid);
+    o.mergeInto=byU[mk(o)][0]!==o.oid?byU[mk(o)][0]:null;   // 併到最上面那張
     o.status=!found?'none':(miss||shipped)?'bad':o.keep.length?'part':'ok';
     o.partial=found&&found<o.items.length;   // 有幾件是舊流程入庫
   }
