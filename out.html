@@ -166,6 +166,7 @@
       <p class="muted" style="margin:8px 0 0">上傳後會先檢查每張單的籃子狀態和 7-11 單號，確認後才產生檔案。</p>
     </div>
     <div id="outList"></div>
+    <div class="muted" style="text-align:center;margin-top:10px"><a href="#" id="toggleClosed">顯示已結案</a></div>
     <div class="muted" style="text-align:center;margin-top:10px"><a href="#" id="toIn">→ 入庫配籃</a>　<a href="#" id="toVendor">切換廠商</a>　<span id="whoami"></span></div>
   </section>
 
@@ -222,6 +223,11 @@
       <button class="btn big" id="dlMain">下載出貨單（含工作表2，給爬蟲）</button>
       <button class="btn big" id="dlSG" style="margin-top:8px">下載 SG 出庫上傳檔</button>
       <button class="btn gray big" id="printBtn" style="margin-top:8px">🖨 列印出貨單（新版）</button>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0" id="closeTitle">結案</h3>
+      <p class="muted" style="margin:0 0 8px">出完、檢查完就結案，清單會比較乾淨。結案後不會出現在清單上，按清單下方「顯示已結案」可以找回、重新開啟。資料都會保留。</p>
+      <button class="btn gray" id="closeOutBtn">結案</button>
     </div>
     <div class="card" id="voidCard">
       <h3 style="margin-top:0">作廢這次出庫</h3>
@@ -403,6 +409,26 @@ $('#lkGo').onclick=async()=>{
   catch(e){$('#lkMsg').textContent='⚠️ '+e.message}
 };
 
+/* ============ SG 編號以入庫為準 ============
+   廠商修正了入庫單的商品編號，但出庫單還是舊的 → SG 裡的庫存是用「入庫時上傳的編號」建的，
+   SG出 要用同一個編號才扣得到庫存。依 id 找：SG 入庫檔下載紀錄 > 入庫單目前的編號 */
+const cleanSG=s=>String(s??'').replace(/[\r\n]/g,'').trim();
+async function fixSku(orders){
+  const its=orders.flatMap(o=>o.items);
+  const docs=await Promise.all(its.map(it=>db.collection(C.items).doc(it.id).get()));
+  const idx={};docs.forEach(d=>{if(d.exists&&vOf(d.data())===VID)idx[d.id]=d.data()});
+  const sgSku={};
+  await Promise.all([...new Set(Object.values(idx).map(x=>x.bid))].map(async b=>{
+    const q=await db.collection(C.sgx).where('bid','==',b).get();
+    q.docs.map(d=>d.data()).filter(x=>!x.void).sort((a,b)=>a.at-b.at).forEach(x=>(x.items||[]).forEach(i=>{if(i.sku)sgSku[i.id]=i.sku}))}));
+  let n=0;
+  its.forEach(it=>{const x=idx[it.id];if(!x)return;const want=cleanSG(sgSku[it.id]||x.sku);
+    if(want&&want!==cleanSG(it.sku)){if(it.sgSku!==want){it.sgSku=want;n++}}else if(it.sgSku){delete it.sgSku;n++}});
+  return n;
+}
+const sgSkuList=orders=>orders.filter(o=>!o.cancel).flatMap(o=>o.items.filter(it=>it.sgSku).map(it=>({o,it})));
+const sgSkuWarn=orders=>{const L=sgSkuList(orders);return L.length?`<div class="warnbox">ℹ️ ${L.length} 件的商品編號，出庫單跟入庫時不一樣（廠商有修正入庫單）。<b>SG出 已自動改用入庫時的編號</b>，SG 才扣得到庫存：<br>`+
+  L.map(({o,it})=>`・${o.no?`單 ${o.no} `:''}${esc(o.uid)} ${esc(o.name||'')}：${esc(cleanSG(it.sku).slice(0,30))} → <b>${esc(it.sgSku.slice(0,40))}</b>`).join('<br>')+'</div>':''};
 /* ============ 對照入庫，判斷每張單的狀態 ============ */
 async function buildPreview(file){
   toast('同步入庫資料…',8000);
@@ -448,6 +474,7 @@ async function buildPreview(file){
     o.status=!found?'none':(miss||shipped)?'bad':o.keep.length?'part':'ok';
     o.partial=found&&found<o.items.length;   // 有幾件是舊流程入庫
   }
+  await fixSku(orders).catch(e=>console.warn(e));
   return {file:file.name,rows,orders};
 }
 
@@ -490,7 +517,7 @@ function showPreview(){
   show('preview');$('#tabs').style.display='none';$('#backBtn').style.display='inline-block';
   $('#title').textContent='出庫預覽';$('#prog').textContent=`${PV.orders.length} 單 / ${PV.rows.length} 件`;
   const dups=PV.orders.filter(o=>o.dup.length&&!o.cancel);
-  $('#pvWarn').innerHTML=dups.length?`<div class="warnbox">⚠️ 有 ${dups.length} 張單的 7-11 單號之前已經用過，爬蟲可能印不出來，請確認是否要取消。</div>`:'';
+  $('#pvWarn').innerHTML=(dups.length?`<div class="warnbox">⚠️ 有 ${dups.length} 張單的 7-11 單號之前已經用過，爬蟲可能印不出來，請確認是否要取消。</div>`:'')+sgSkuWarn(PV.orders);
   $('#pvSum').innerHTML=sumHtml(PV.orders);
   $('#pvOrders').innerHTML=withZones(PV.orders,o=>orderCard(o,{preview:true}));
   $('#pvOrders').querySelectorAll('[data-act=cancel]').forEach(b=>b.onclick=()=>{const o=PV.orders.find(x=>x.oid===b.closest('.order').dataset.oid);o.cancel=!o.cancel;showPreview()});
@@ -529,7 +556,7 @@ function buildSG(o){
   o.orders.filter(x=>!x.cancel).forEach(x=>x.items.forEach(it=>{
     const r=new Array(45).fill(null);
     r[0]=x.no;r[1]='TWD';r[6]='待處理';r[7]=date;r[8]=V.ship;r[9]='已付款';r[13]=x.uid;
-    r[27]=x.no+'_'+x.name;r[28]=x.name;r[39]='庫存貨品';r[40]=it.sku;r[41]=it.sku;r[42]=0;r[43]=1;r[44]=x.oid;aoa.push(r)}));
+    r[27]=x.no+'_'+x.name;r[28]=x.name;r[39]='庫存貨品';r[40]=it.sgSku||it.sku;r[41]=it.sgSku||it.sku;r[42]=0;r[43]=1;r[44]=x.oid;aoa.push(r)}));
   const ws=XLSX.utils.aoa_to_sheet(aoa,{cellDates:true});
   for(let i=2;i<=aoa.length;i++){const c=ws['H'+i];if(c){c.z='yyyy/mm/dd'}}
   return ws;
@@ -801,6 +828,14 @@ $('#ckDone').onclick=async()=>{const main=O.orders.find(x=>x.oid===CK),grp=group
 
 /* ============ 出庫清單 / 開啟 ============ */
 function stopListen(){unsub.forEach(f=>f());unsub=[]}
+let showClosed=false;
+document.getElementById('toggleClosed').onclick=e=>{e.preventDefault();showClosed=!showClosed;showList()};
+document.getElementById('closeOutBtn').onclick=async()=>{
+  const on=!O.closed, act=O.orders.filter(o=>!o.cancel), left=act.filter(o=>!O.packed[o.oid]).length;
+  if(!(await ask(on?`把 ${O.name} 結案？`+(left&&!O.void?`\n\n⚠️ 還有 ${left} 張單沒檢查。`:'')+`\n\n結案後不會出現在清單，可按「顯示已結案」找回。`:`重新開啟 ${O.name}？`,on?'結案':'重新開啟')))return;
+  await db.collection(C.out).doc(O.id).update({closed:on,closedAt:Date.now(),closedBy:me()});
+  if(on)showList();
+};
 async function showList(){
   stopListen();O=null;PV=null;$('#tabs').style.display='none';$('#backBtn').style.display='none';$('#title').textContent=V.name+' 出庫';$('#prog').textContent='';
   show('list');$('#whoami').innerHTML=`登入：${esc(me())}　<a href="#" id="logout">登出</a>`;$('#logout').onclick=e=>{e.preventDefault();auth.signOut()};
@@ -809,16 +844,20 @@ async function showList(){
   try{
     const qs=await db.collection(C.out).where('v','==',VID).get();
     const ts=x=>x.data().createdAt&&x.data().createdAt.toDate?x.data().createdAt.toDate().getTime():0;
-    const docs=qs.docs.sort((a,b)=>ts(b)-ts(a)).slice(0,30);
+    const docs=qs.docs.filter(d=>showClosed||!d.data().closed).sort((a,b)=>ts(b)-ts(a)).slice(0,30);
+    $('#toggleClosed').textContent=showClosed?'隱藏已結案':'顯示已結案';
     $('#outList').innerHTML=docs.length?docs.map(d=>{const x=d.data(),n=x.orders.filter(o=>!o.cancel).length,p=Object.values(x.packed||{}).filter(Boolean).length;
-      return `<div class="card" data-id="${d.id}" style="cursor:pointer;${x.void?'opacity:.45':''}"><div style="display:flex;justify-content:space-between"><b style="font-size:18px;${x.void?'text-decoration:line-through':''}">${esc(V.name)}${esc(x.name)}</b><span>${x.void?'已作廢':`檢查 ${p}/${n}`}</span></div>
+      return `<div class="card" data-id="${d.id}" style="cursor:pointer;${x.void?'opacity:.45':''}"><div style="display:flex;justify-content:space-between"><b style="font-size:18px;${x.void?'text-decoration:line-through':''}">${esc(V.name)}${esc(x.name)}</b><span>${x.void?'已作廢':`檢查 ${p}/${n}`}${x.closed?' ・ 已結案':''}</span></div>
       <div class="muted">單號 ${x.start}～${x.start+x.orders.length-1} ・ ${esc(x.createdBy||'')}</div></div>`}).join(''):'<div class="empty">還沒有出庫紀錄</div>';
     $('#outList').querySelectorAll('[data-id]').forEach(el=>el.onclick=()=>openOut(el.dataset.id));
   }catch(e){$('#outList').innerHTML=`<div class="empty">讀取失敗：${esc(e.message)}</div>`}
 }
 async function openOut(id){
   stopListen();
-  unsub.push(db.collection(C.out).doc(id).onSnapshot(d=>{if(!d.exists)return;O={id,...d.data()};renderOut()}));
+  let fixed=false;
+  unsub.push(db.collection(C.out).doc(id).onSnapshot(d=>{if(!d.exists)return;O={id,...d.data()};renderOut();
+    if(!fixed&&!O.void){fixed=true;const oo=JSON.parse(JSON.stringify(O.orders));
+      fixSku(oo).then(n=>{if(n&&O&&O.id===id)return db.collection(C.out).doc(id).update({orders:oo})}).catch(e=>console.warn(e))}}));
   $('#tabs').style.display='flex';$('#backBtn').style.display='inline-block';show('orders');
 }
 function renderOut(){
@@ -827,8 +866,9 @@ function renderOut(){
   ['#dlMain','#dlSG','#printBtn','#voidBtn'].forEach(sel=>{$(sel).disabled=isVoid;$(sel).style.opacity=isVoid?.4:1});
   $('#voidCard').querySelector('h3').textContent=isVoid?`已作廢（${O.voidBy||''} ${O.voidAt?new Date(O.voidAt).toLocaleString('zh-TW'):''}）`:'作廢這次出庫';
   const act=O.orders.filter(o=>!o.cancel), p=act.filter(o=>O.packed[o.oid]).length;
-  $('#title').textContent=V.name+O.name;$('#prog').textContent=`檢查 ${p}/${act.length}`;
-  $('#odSum').innerHTML=(isVoid?'<div class="warnbox" style="grid-column:1/-1">⚠️ 這次出庫已作廢，請不要照這份出貨</div>':'')+sumHtml(O.orders);
+  $('#title').textContent=V.name+O.name+(O.closed?'（已結案）':'');$('#prog').textContent=`檢查 ${p}/${act.length}`;
+  $('#closeTitle').textContent=O.closed?'已結案':'結案';$('#closeOutBtn').textContent=O.closed?'重新開啟':'結案';
+  $('#odSum').innerHTML=(isVoid?'<div class="warnbox" style="grid-column:1/-1">⚠️ 這次出庫已作廢，請不要照這份出貨</div>':'')+(sgSkuList(O.orders).length?`<div style="grid-column:1/-1">${sgSkuWarn(O.orders)}</div>`:'')+sumHtml(O.orders);
   const F=[['all','全部狀態'],['todo','未檢查'],['done','已檢查'],['bad','🔴 不能出'],['part','🟡 部分出'],['none','⚪ 無紀錄']];
   $('#stSel').innerHTML=F.map(([k,t])=>`<option value="${k}" ${filt===k?'selected':''}>${t}</option>`).join('');
   const zones=[...new Set(O.orders.map(o=>zn(o.uid)))].sort();
