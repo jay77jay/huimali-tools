@@ -228,7 +228,8 @@
     <div class="card">
       <button class="btn gray" onclick="$('#addFile').click()">＋ 加入入庫單 / 補資料</button>
       <button class="btn gray" style="margin-top:8px" onclick="openLink('add')">🔗 貼上 Google 試算表連結（補件）</button>
-      <p class="muted" style="margin:6px 0 8px">加入新的入庫單；或選同一份入庫單，補上舊版沒讀到的資料（例如 uniqlo 吊牌上的其他編號），配籃進度不會變。</p>
+      <p class="muted" style="margin:6px 0 8px">加入新的入庫單；或選「同名」的入庫單 → 用新版內容更新（品名、數量、收件人…），已配籃的進度保留。</p>
+      <div id="fileList" style="margin-bottom:8px"></div>
       <input type="file" id="addFile" accept=".xlsx,.xls" multiple style="display:none">
       <button class="btn gray" id="exportBtn" style="margin-top:8px">匯出配籃結果 (.xlsx)</button>
       <button class="btn bad" id="closeBtn" style="float:right;margin-top:8px">結案</button>
@@ -369,7 +370,7 @@ function parseKey(img){
   if(/uniqlo/.test(img)) return {src:'uniqlo',prod:'',col:''};
   return {src:'other',prod:'',col:''};
 }
-function parseSize(sku){const m=sku.normalize('NFKC').match(/(?:有庫存|庫存緊張|預約)\/?(.*)$/);return m?m[1].replace(/^\d{3,4}出貨/,'').trim():''}
+function parseSize(sku){const m=sku.normalize('NFKC').match(/(?:有庫存|庫存緊張|預約)\/?(.*)$/);return m?m[1].replace(/^\d{3,4}出貨/,'').replace(/\s*\d{6,}\s*$/,'').trim():''}   // 廠商在尺寸後面補的核對編號（L246507804）不算尺寸
 function sizeKey(sz){const u=(sz||'').toUpperCase().replace(/\s+/g,' ').trim();if(!u)return'?';if(/^(F|FREE|フリー|ONE ?SIZE|ONE|FREE SIZE)$/.test(u))return'F';return u}
 function parseColor(sku){let s=sku.normalize('NFKC').split('/')[0];
   if(/^E\d+-\d{5}/.test(s)) s=s.replace(/^E\d+-\d{5}/,''); else s=s.replace(/^[A-Za-z0-9\-]+/,'');
@@ -465,28 +466,68 @@ async function createBatch(files){
   toast(`已建立批次：${lines.length} 行${dup?`（略過重複 ${dup}）`:''}`,3500);
   return ref.id;
 }
+const LF=['sku','qty','uid','name','jp','st','img','alt'];   // 同名重傳時會更新的欄位
+const sameLine=(a,b)=>LF.every(k=>JSON.stringify(a[k]??'')===JSON.stringify(b[k]??''));
 async function addFilesToBatch(files){
   const parsed=await readFiles(files);
-  // 同名的入庫單已經在這批裡 → 先提醒：只會補資料，不會重複加入
-  const same=parsed.filter(p=>S.files.includes(p.grp)).map(p=>p.grp), fresh=parsed.filter(p=>!S.files.includes(p.grp)).map(p=>p.grp);
-  if(same.length&&!(await ask(`⚠️ 入庫單名稱重複\n${same.join('、')} 已經在這批裡。\n\n只會「更新資料」（補上舊版沒讀到的欄位），不會重複加入，配籃進度不變。`+
-    (fresh.length?`\n\n${fresh.join('、')} 是新的，會追加進來。`:''),'更新'))) return;
-  let added=0,dup=0,fixed=0;
+  const same=parsed.filter(p=>S.files.includes(p.grp)), fresh=parsed.filter(p=>!S.files.includes(p.grp));
+  // 同名入庫單：先算出新舊版差異給同仁確認
+  const plan=[];
+  for(const p of same){
+    const old=S.lines.filter(l=>l.box===p.grp), oById=new Map(old.map(l=>[l.id,l])), nIds=new Set(p.lines.map(l=>l.id));
+    const chg=p.lines.filter(l=>oById.has(l.id)&&!sameLine(oById.get(l.id),l)), add=p.lines.filter(l=>!oById.has(l.id));
+    const gone=old.filter(l=>!nIds.has(l.id)), goneKeep=gone.filter(l=>(S.rcv[l.id]||0)>0);
+    const moved=chg.filter(l=>(S.rcv[l.id]||0)>0&&oById.get(l.id).uid!==l.uid).map(l=>`${l.sku.slice(0,24)}：已放進籃 ${oById.get(l.id).uid} → 改成籃 ${l.uid}`);
+    plan.push({p,chg,add,gone,goneKeep,moved});
+  }
+  if(same.length){
+    const msg=plan.map(x=>`📄 ${x.p.grp}（新版）\n・資料有變動 ${x.chg.length} 行\n・新增 ${x.add.length} 行\n・新版沒有、移除 ${x.gone.length-x.goneKeep.length} 行`+
+      (x.goneKeep.length?`\n・新版沒有、但已配籃 ${x.goneKeep.length} 行 → 保留不刪，請人工確認`:'')+
+      (x.moved.length?`\n⚠️ 收件人改了、衣服要換籃：\n`+x.moved.join('\n'):'')).join('\n\n');
+    if(!(await ask(`入庫單名稱相同，會用新版內容更新，已配籃進度保留。\n\n${msg}`+(fresh.length?`\n\n另外 ${fresh.map(p=>p.grp).join('、')} 是新的，會追加進來。`:''),'更新'))) return;
+  }
+  let added=0,dup=0,upd=0,del=0;const delIds=[];
   await db.runTransaction(async tx=>{
     const lr=db.collection(C.lines).doc(S.id), br=db.collection(C.batches).doc(S.id);
-    const cur=(await tx.get(lr)).data().lines, bd=(await tx.get(br)).data();
-    const byId=new Map(cur.map(l=>[l.id,l])), files=[...bd.files];
+    let cur=(await tx.get(lr)).data().lines; const bd=(await tx.get(br)).data(), files=[...bd.files];
+    for(const x of plan){
+      const nById=new Map(x.p.lines.map(l=>[l.id,l])), keep=new Set(x.goneKeep.map(l=>l.id));
+      cur=cur.filter(l=>{if(l.box!==x.p.grp||nById.has(l.id)||keep.has(l.id))return true;del++;delIds.push(l.id);return false});
+      cur=cur.map(l=>{const n=l.box===x.p.grp&&nById.get(l.id);if(n&&!sameLine(l,n)){upd++;return n}return l});
+    }
+    const byId=new Map(cur.map(l=>[l.id,l]));
     for(const p of parsed){if(!files.includes(p.grp))files.push(p.grp);for(const l of p.lines){
       const old=byId.get(l.id);
-      // 已經有的行：補上舊版沒有的欄位（例如 uniqlo 的其他編號），配籃進度不動
-      if(old){dup++;if((l.alt||[]).length&&!(old.alt||[]).length){old.alt=l.alt;fixed++}continue}
+      if(old){if(old.box!==l.box)dup++;continue}   // 別張入庫單已經有同一個 id
       byId.set(l.id,l);cur.push(l);added++}}
     tx.set(lr,{lines:cur});
     tx.update(br,{indexed:false,files,lineCount:cur.length,qty:cur.reduce((a,l)=>a+l.qty,0),name:bd.name.replace(/ .*$/,' ')+files.join('、')});
   });
-  await ask(added||!dup?`✅ 已追加 ${added} 行`+(dup?`\n（另有 ${dup} 行已經在這批，略過）`:'')+(fixed?`\n補上 ${fixed} 件的其他編號`:''):
-    `✅ 已更新\n這 ${dup} 行原本就在這批，沒有重複加入。\n`+(fixed?`補上 ${fixed} 件的其他編號。`:'資料沒有需要補的地方。'),'好',true);
+  if(delIds.length)await dropIndex(delIds).catch(e=>console.warn(e));
+  await ask(`✅ 完成\n`+(upd?`更新 ${upd} 行\n`:'')+(added?`新增 ${added} 行\n`:'')+(del?`移除 ${del} 行\n`:'')+(dup?`（${dup} 行在別張入庫單已經有，略過）\n`:'')+(!upd&&!added&&!del?'內容跟原本一樣，沒有變動。':''),'好',true);
   await openBatch(S.id);
+}
+async function dropIndex(ids){   // 移除的行：出庫索引裡屬於這批的也拿掉（避免舊籃提示、出庫查詢看到）
+  const bid=S.id;
+  for(const part of chunk(ids,200)){const ds=await Promise.all(part.map(id=>db.collection(C.items).doc(id).get()));
+    const b=db.batch();let n=0;ds.forEach(d=>{if(d.exists&&d.data().bid===bid&&!d.data().shipped){b.delete(d.ref);n++}});if(n)await b.commit()}
+}
+function renderFiles(){
+  if(!S||!$('#fileList'))return;
+  $('#fileList').innerHTML=S.files.map((f,i)=>{const ls=S.lines.filter(l=>l.box===f),q=ls.reduce((a,l)=>a+l.qty,0),d=ls.reduce((a,l)=>a+Math.min(l.qty,S.rcv[l.id]||0),0);
+    return `<div class="it" style="align-items:center"><div class="tx">📄 <b>${esc(f)}</b> <span class="muted">${ls.length} 行・已配 ${d}/${q}</span></div>${S.files.length>1?`<button class="btn gray" onclick="delFile(${i})">移除</button>`:''}</div>`}).join('');
+}
+async function delFile(i){
+  const f=S.files[i], ls=S.lines.filter(l=>l.box===f), d=ls.reduce((a,l)=>a+Math.min(l.qty,S.rcv[l.id]||0),0);
+  if(!(await ask(`從這批移除「${f}」？\n${ls.length} 行會從配籃清單拿掉。`+(d?`\n\n⚠️ 其中 ${d} 件已經配籃，衣服要從籃子拿出來。\n（之後再加入同一份入庫單，配籃進度會回來）`:''),'移除')))return;
+  await db.runTransaction(async tx=>{
+    const lr=db.collection(C.lines).doc(S.id), br=db.collection(C.batches).doc(S.id);
+    const cur=(await tx.get(lr)).data().lines.filter(l=>l.box!==f), bd=(await tx.get(br)).data(), files=bd.files.filter(x=>x!==f);
+    tx.set(lr,{lines:cur});
+    tx.update(br,{indexed:false,files,lineCount:cur.length,qty:cur.reduce((a,l)=>a+l.qty,0),name:bd.name.replace(/ .*$/,' ')+files.join('、')});
+  });
+  await dropIndex(ls.map(l=>l.id)).catch(e=>console.warn(e));
+  toast(`已移除 ${f}`);await openBatch(S.id);
 }
 
 async function showList(){
@@ -784,7 +825,7 @@ function renderReport(){
   if(S.ex.length){lines.push('','■ 例外（照片左上角編號對應）：');S.ex.forEach((e,i)=>lines.push(`${i+1}. ${e.type}｜${e.box}｜${e.note}${e.photo?'（有照片）':''}`))}
   if(!miss.length&&!S.ex.length) lines.push('全部到齊，無例外。');
   $('#repText').textContent=lines.join('\n');
-  renderSG();
+  renderSG();renderFiles();
 }
 async function delEx(i){if(await ask('刪除這筆例外？','刪除')){db.collection(C.ex).doc(S.ex[i]._id).delete().catch(e=>toast(e.message))}}
 
@@ -1050,6 +1091,7 @@ function keysOf(c){
   if(k.src==='zozo'){if(k.prod)ks.add(k.prod.slice(-6));if(/^\d{6,}$/.test(t))ks.add(t.slice(-6))}
   if(/^E\d+-/.test(c.sku)) ks.add(nrm(c.sku.split('-')[0]).slice(1));      // uniqlo：E480740 → 480740
   (c.alt||[]).forEach(a=>ks.add(a));
+  (c.sku.normalize('NFKC').match(/\d{6,}/g)||[]).forEach(d=>ks.add(d));   // 品名裡任何位置的 6 碼以上數字（廠商補上的核對編號）
   ks.delete('');return c._k={keys:[...ks],full:nrm(c.sku.split('/')[0])};
 }
 function suggest(q){
