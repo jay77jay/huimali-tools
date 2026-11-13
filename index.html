@@ -185,6 +185,10 @@
     </div>
     <div class="muted" id="gridInfo" style="margin:2px 0 8px"></div>
     <div class="grid" id="grid"></div>
+    <div class="card" style="margin-top:12px">
+      <button class="btn big" id="lockBtn">🔒 清點完畢，鎖定</button>
+      <p class="muted" id="lockInfo" style="margin:6px 0 0">鎖定後，畫面上剩下的衣服點進去改成「標記狀態」：預設未到貨，可改成待確認（無標示／規格錯誤）並拍照、寫原因。</p>
+    </div>
   </section>
 
   <!-- 籃子 -->
@@ -205,10 +209,11 @@
   <!-- 回報 -->
   <section id="v-report" style="display:none">
     <div class="card">
-      <button class="btn warn big" id="addExBtn">＋ 記錄例外（多出 / 名稱不符）</button>
+      <button class="btn warn big" id="addExBtn">＋ 未在入庫單(其他因素)</button>
     </div>
-    <div class="card"><h3 style="margin:0 0 6px">例外紀錄</h3><div id="exList" class="list"></div></div>
-    <div class="card"><h3 style="margin:0 0 6px">尚未到貨（依入庫單）</h3><div id="missList"></div></div>
+    <div class="card"><h3 style="margin:0 0 6px">未在入庫單(其他因素)</h3><div id="exList" class="list"></div></div>
+    <div class="card"><h3 style="margin:0 0 6px">待確認（無標示／規格錯誤）・入庫單上的件</h3><div class="muted" style="margin-bottom:6px">清點鎖定時標記的</div><div id="pendList" class="list"></div></div>
+    <div class="card"><h3 style="margin:0 0 6px">未到貨（依入庫單）</h3><div id="missList"></div></div>
     <div class="card">
       <h3 style="margin:0 0 6px">SG 上傳檔</h3>
       <div id="sgSum" class="sum" style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;text-align:center"></div>
@@ -223,7 +228,7 @@
       <h3 style="margin:0 0 6px">回報文字</h3>
       <pre class="rep" id="repText"></pre>
       <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="copyRep">複製回報文字</button><button class="btn" id="shareRep" style="background:#06c755">文字＋照片分享（LINE）</button></div>
-      <p class="muted" style="margin:6px 0 0">分享時照片左上角會蓋上例外編號，對應文字裡的「1.」「2.」…；文字同時複製好，LINE 若只收到照片，在對話框長按貼上即可。</p>
+      <p class="muted" style="margin:6px 0 0">分享時照片左上角會蓋上分類＋編號（例：待確認 2），對應文字裡該分類的「2.」…；文字同時複製好，LINE 若只收到照片，在對話框長按貼上即可。</p>
     </div>
     <div class="card">
       <button class="btn gray" onclick="$('#addFile').click()">＋ 加入入庫單 / 補資料</button>
@@ -241,9 +246,9 @@
 
 <div class="modal" id="mPick"><div class="sheet" id="mPickBody"></div></div>
 <div class="modal" id="mEx"><div class="sheet">
-  <h2 id="exTitle">記錄例外</h2>
+  <h2 id="exTitle">未在入庫單(其他因素)</h2>
   <label class="muted">類型</label>
-  <select id="exType"><option>入庫單上沒有（多出）</option><option>名稱/標籤不符</option><option>數量不符</option><option>其他</option></select>
+  <select id="exType"><option>未在入庫單</option><option>待確認（無標示／規格錯誤）</option><option>數量不符</option><option>其他</option></select>
   <label class="muted" style="display:block;margin-top:8px">入庫單</label>
   <select id="exBox"></select>
   <label class="muted" style="display:block;margin-top:8px">吊牌內容 / 說明</label>
@@ -252,6 +257,20 @@
   <input type="file" id="exPhoto" accept="image/*" capture="environment">
   <img id="exPrev" class="exph" style="display:none">
   <div class="row"><button class="btn gray" id="exCancel">取消</button><button class="btn warn" id="exSave">儲存</button></div>
+</div></div>
+<div class="modal" id="mSt"><div class="sheet">
+  <h2 style="margin-bottom:6px">標記狀態</h2>
+  <div id="stItem"></div>
+  <label class="muted" style="display:block;margin-top:8px">狀態</label>
+  <select id="stType"><option value="miss">未到貨</option><option value="pend">待確認（無標示／規格錯誤）</option></select>
+  <div id="stMore">
+    <label class="muted" style="display:block;margin-top:8px">異常說明（例：顏色標錯、無吊牌）</label>
+    <textarea id="stNote" rows="2"></textarea>
+    <label class="muted" style="display:block;margin-top:8px">照片（吊牌＋衣服）</label>
+    <input type="file" id="stPhoto" accept="image/*" capture="environment">
+    <img id="stPrev" class="exph" style="display:none">
+  </div>
+  <div class="row"><button class="btn gray" id="stCancel">取消</button><button class="btn warn" id="stSave">儲存</button></div>
 </div></div>
 <div class="modal" id="mLink"><div class="sheet">
   <h2>貼上 Google 試算表連結</h2>
@@ -560,14 +579,14 @@ async function openBatch(id){
   $('#batchList').innerHTML='<div class="empty">開啟中…</div>';
   const [bd,ld]=await Promise.all([db.collection(C.batches).doc(id).get(),db.collection(C.lines).doc(id).get()]);
   if(!bd.exists||!ld.exists){toast('找不到這個批次');return showList()}
-  S={id,...bd.data(),lines:ld.data().lines,rcv:{},ex:[]};
+  S={id,...bd.data(),lines:ld.data().lines,rcv:{},ex:[],lst:{}};S.locked=!!S.locked;
   myLog=[];curBox='ALL';curJp='ALL';curSize='ALL';curColor='ALL';query='';
   $('#tabs').style.display='flex';$('#backBtn').style.display='inline-block';
   // 即時同步：配籃進度、例外、學習
   unsub.push(db.collection(C.state).doc(id).onSnapshot(d=>{if(!S||S.id!==id)return;const x=d.data()||{};S.rcv=x.rcv||{};S.sgIn=x.sgIn||{};render(false)}));
   unsub.push(db.collection(C.sgx).where('bid','==',id).onSnapshot(q=>{if(!S||S.id!==id)return;S.sgx=q.docs.map(d=>({_id:d.id,...d.data()})).sort((a,b)=>a.at-b.at);renderSG()}));
-  unsub.push(db.collection(C.ex).where('bid','==',id).onSnapshot(q=>{if(!S||S.id!==id)return;S.ex=q.docs.map(d=>({_id:d.id,...d.data()})).sort((a,b)=>a.t-b.t);renderReport()}));
-  unsub.push(db.collection(C.batches).doc(id).onSnapshot(d=>{if(d.exists&&S&&S.id===id){S.name=d.data().name;S.files=d.data().files;S.closed=d.data().closed;render(false)}}));
+  unsub.push(db.collection(C.ex).where('bid','==',id).onSnapshot(q=>{if(!S||S.id!==id)return;const all=q.docs.map(d=>({_id:d.id,...d.data()})).sort((a,b)=>a.t-b.t);S.ex=all.filter(x=>!x.lid);S.lst={};all.filter(x=>x.lid).forEach(x=>S.lst[x.lid]=x);render(false)}));
+  unsub.push(db.collection(C.batches).doc(id).onSnapshot(d=>{if(d.exists&&S&&S.id===id){S.name=d.data().name;S.files=d.data().files;S.closed=d.data().closed;S.locked=!!d.data().locked;render(false)}}));
   render();show('match');
   loadPrior().catch(e=>console.warn(e));
 }
@@ -657,6 +676,7 @@ function resolve(open,ctx){
 function saveLearn(kind,k,v){db.collection(C.meta).doc('learn').set({[kind]:{[k]:v}},{merge:true}).catch(()=>{})}
 
 function assign(l,{same=0}={}){
+  if(S.locked) return showErr('清點已鎖定','要配籃請先到配籃頁最下方按「解除鎖定」');
   if(rem(l)<=0) return showErr('這件已經配完了','');
   S.rcv[l.id]=(S.rcv[l.id]||0)+1;            // 先更新畫面，Firestore 背景同步
   myLog.push(l.id);
@@ -687,7 +707,7 @@ function undo(){
   clearResult();render();toast('已復原上一件');
 }
 function showErr(a,b){beep(false);const r=$('#result');r.className='err';r.style.display='block';
-  r.innerHTML=`<div class="nm">⚠️ ${esc(a)}</div><div class="meta">${esc(b)}</div><div class="acts"><button class="btn gray" onclick="clearResult()">關閉</button><button class="btn warn" onclick="openEx(${JSON.stringify(a+' '+b).replace(/"/g,'&quot;')})">記錄例外</button></div>`}
+  r.innerHTML=`<div class="nm">⚠️ ${esc(a)}</div><div class="meta">${esc(b)}</div><div class="acts"><button class="btn gray" onclick="clearResult()">關閉</button><button class="btn warn" onclick="openEx(${JSON.stringify(a+' '+b).replace(/"/g,'&quot;')})">記錄：未在入庫單</button></div>`}
 function clearResult(){$('#result').style.display='none'}
 
 let AC=null;
@@ -729,6 +749,47 @@ function confirmTile(l){
   $('#mPick').classList.add('on');
 }
 
+/* ================= 清點鎖定 / 狀態標記 =================
+   鎖定後剩下的件：預設「未到貨」，可改「待確認」＋照片＋說明（存成 bkt_ex，帶 lid＝入庫單那一行）
+   之後又配進籃子的件，狀態自動失效（只看還沒配完的） */
+const T_NA='未在入庫單',T_PD='待確認（無標示／規格錯誤）';
+const pendOf=l=>rem(l)>0&&S.lst&&S.lst[l.id]?S.lst[l.id]:null;
+function renderLock(){
+  $('#lockBtn').textContent=S.locked?'🔓 解除鎖定（繼續配籃）':'🔒 清點完畢，鎖定';
+  $('#lockBtn').className='btn big '+(S.locked?'warn':'');
+}
+$('#lockBtn').onclick=async()=>{
+  const on=!S.locked, left=S.lines.filter(l=>rem(l)>0).reduce((a,l)=>a+rem(l),0);
+  if(!(await ask(on?`清點完畢，鎖定？\n剩下 ${left} 件沒配到，預設都是「未到貨」。\n鎖定後點圖片可以改成「待確認」並拍照說明。`:'解除鎖定，繼續配籃？\n已標記的狀態會保留；之後配進籃子的件，狀態自動取消。',on?'鎖定':'解除')))return;
+  S.locked=on;render(false);
+  db.collection(C.batches).doc(S.id).update({locked:on,lockedBy:me(),lockedAt:Date.now()}).catch(e=>toast(e.message));
+};
+let stLine=null,stPhotoData=null;
+function compressPhoto(f,cb){const img=new Image();img.onload=()=>{
+  const s=Math.min(1,900/Math.max(img.width,img.height)),c=document.createElement('canvas');
+  c.width=img.width*s;c.height=img.height*s;c.getContext('2d').drawImage(img,0,0,c.width,c.height);cb(c.toDataURL('image/jpeg',.7));URL.revokeObjectURL(img.src)};img.src=URL.createObjectURL(f)}
+function openSt(l){
+  stLine=l;const cur=S.lst[l.id];
+  $('#stItem').innerHTML=`<div class="it"><img src="${esc(l.img)}" onerror="this.style.visibility='hidden'"><div class="tx">${esc(dn(l))}　<b>${esc(l.size)}</b>${rem(l)>1?' ×'+rem(l):''}<br><span class="badge" style="background:${zc(l.uid)}">${esc(l.uid)}</span>${esc(l.name)} ・ ${esc(l.box)}</div></div>`;
+  $('#stType').value=cur?'pend':'miss';$('#stNote').value=cur?cur.note||'':'';$('#stPhoto').value='';
+  stPhotoData=cur?cur.photo||null:null;$('#stPrev').src=stPhotoData||'';$('#stPrev').style.display=stPhotoData?'block':'none';
+  $('#stMore').style.display=cur?'':'none';$('#mSt').classList.add('on');
+}
+$('#stType').onchange=()=>$('#stMore').style.display=$('#stType').value==='pend'?'':'none';
+$('#stPhoto').onchange=e=>{const f=e.target.files[0];if(f)compressPhoto(f,d=>{stPhotoData=d;$('#stPrev').src=d;$('#stPrev').style.display='block'})};
+$('#stCancel').onclick=()=>close('#mSt');
+$('#stSave').onclick=()=>{
+  const l=stLine,cur=S.lst[l.id];
+  if($('#stType').value==='miss'){if(cur){db.collection(C.ex).doc(cur._id).delete().catch(e=>toast(e.message))}close('#mSt');toast('未到貨');return}
+  const note=$('#stNote').value.trim();
+  if(!note){toast('請寫異常說明（例：顏色標錯）',3000);return}
+  const v={bid:S.id,lid:l.id,type:T_PD,box:l.box,note,photo:stPhotoData||null,uid:l.uid,name:l.name,sku:l.sku};
+  if(cur)db.collection(C.ex).doc(cur._id).update({...v,editedBy:me(),editedAt:Date.now()}).catch(e=>toast(e.message));
+  else db.collection(C.ex).add({...v,t:Date.now(),by:me()}).catch(e=>toast(e.message));
+  close('#mSt');toast('已標記待確認');
+};
+function stOff(i){const l=S.lines.find(x=>x.id===i);if(l)openSt(l)}
+
 /* ================= 畫面 ================= */
 $('#jpSel').onchange=e=>{curJp=e.target.value;curSize='ALL';curColor='ALL';render()};
 $('#sizeSel').onchange=e=>{curSize=e.target.value;curColor='ALL';render()};
@@ -768,7 +829,7 @@ function render(){
   fill('#colorSel','顏色',colors.map(c=>[c,cc[c]]),curColor,c=>c);
   if(curColor!=='ALL') open=open.filter(l=>l.color===curColor);
   $('#clrF').style.display=(curJp!=='ALL'||curSize!=='ALL'||curColor!=='ALL')?'':'none';
-  $('#gridInfo').innerHTML=(query?`搜尋「${esc(query)}」 <a href="#" id="clrQ">清除</a> ・ `:'')+`還沒配到 ${open.length} 行，點圖片配籃`;
+  $('#gridInfo').innerHTML=(S.locked?'<b style="color:#b45309">🔒 清點已鎖定：點圖片標記狀態（不會配籃）</b><br>':'')+(query?`搜尋「${esc(query)}」 <a href="#" id="clrQ">清除</a> ・ `:'')+`還沒配到 ${open.length} 行，`+(S.locked?'點圖片標記狀態':'點圖片配籃');
   if(query) $('#clrQ').onclick=e=>{e.preventDefault();query='';render()};
   open.sort((a,b)=>(zn(a.uid)-zn(b.uid))||(+a.uid-+b.uid));
   const shown=open.slice(0,120);
@@ -777,9 +838,11 @@ function render(){
       <span class="sz">${esc(l.size||'?')}${rem(l)>1?' ×'+rem(l):''}</span>
       <span class="zb" style="background:${zc(l.uid)}">${esc(l.uid)}</span>
       ${l.st&&l.st!=='onFlight'?`<span class="zb" style="background:#92400e;top:auto;bottom:52px">${esc(l.st)}</span>`:''}
+      ${pendOf(l)?`<span class="zb" style="background:#b45309;top:auto;bottom:52px;left:4px;right:auto;max-width:90%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">待確認${pendOf(l).note?'：'+esc(pendOf(l).note):''}</span>`:(S.locked?`<span class="zb" style="background:#64748b;top:auto;bottom:52px;left:4px;right:auto">未到貨</span>`:'')}
       <div class="t">${esc(dn(l))}</div></div>`).join('')+(open.length>120?`<div class="empty" style="grid-column:1/-1">只顯示前 120 件，請用上面的篩選</div>`:'')
     :`<div class="empty" style="grid-column:1/-1">${curBox==='ALL'?'全部配完 🎉':'這張入庫單配完了 ✅'}</div>`;
-  $('#grid').querySelectorAll('.tile').forEach(el=>el.onclick=()=>confirmTile(shown[+el.dataset.i]));
+  $('#grid').querySelectorAll('.tile').forEach(el=>el.onclick=()=>S.locked?openSt(shown[+el.dataset.i]):confirmTile(shown[+el.dataset.i]));
+  renderLock();
   const pk=S.prior?Object.keys(S.prior).filter(u=>S.lines.some(l=>l.uid===u)):[];
   $('#priorBar').innerHTML=pk.length?`<div class="card" style="background:#fef9c3;padding:10px">🧺 這批有 <b>${pk.length}</b> 位客人已經有舊籃：${pk.map(esc).join('、')}。配到他們的衣服時，放進舊籃，不用另外貼新標籤。</div>`:'';
   // 兩支手機幾乎同時配到「同款商品」時，可能配到同一行 → 超過數量就警告
@@ -810,22 +873,38 @@ function renderBaskets(){
       <div class="tx">${esc(dn(l))}<br><span class="muted">${esc(l.box)}${l.st&&l.st!=='onFlight'?' ・ 狀態 '+esc(l.st):''}</span></div>
       <div>${rem(l)<=0?'✅':`<span style="color:var(--bad)">缺 ${rem(l)}</span>`}</div></div>`).join('')}</div></div>`}).join('')||'<div class="empty">沒有符合的籃子</div>';
 }
+// 舊資料的類型 → 新分類
+const catOf=t=>t===T_NA||t==='入庫單上沒有（多出）'?'na':t===T_PD||t==='名稱/標籤不符'?'pd':'ot';
+let REP=[];   // 回報用：有照片的項目（分享時蓋編號）
 function renderReport(){
   if(!S) return;
-  $('#exList').innerHTML=S.ex.length?S.ex.map((e,i)=>`<div class="it" style="flex-wrap:wrap">
+  const exRow=(e,i)=>`<div class="it" style="flex-wrap:wrap">
     <div class="tx"><b>${esc(e.type)}</b> ・ ${esc(e.box)} <span class="muted">${esc(e.by||'')}${e.editedBy?`（${esc(e.editedBy)} 修改過）`:''}</span><br>${esc(e.note)}</div>
     <button class="btn gray" onclick="editEx(${i})">修改</button><button class="btn gray" onclick="delEx(${i})">刪除</button>
-    ${e.photo?`<img src="${e.photo}" class="exph" style="width:100%;height:auto">`:''}</div>`).join(''):'<div class="muted">沒有例外</div>';
-  const miss=S.lines.filter(l=>rem(l)>0);
+    ${e.photo?`<img src="${e.photo}" class="exph" style="width:100%;height:auto">`:''}</div>`;
+  $('#exList').innerHTML=S.ex.length?S.ex.map(exRow).join(''):'<div class="muted">沒有</div>';
+  const miss=S.lines.filter(l=>rem(l)>0&&!pendOf(l)), pend=S.lines.filter(l=>pendOf(l));
+  $('#pendList').innerHTML=pend.length?pend.map(l=>{const e=pendOf(l);return `<div class="it" style="flex-wrap:wrap"><img src="${esc(l.img)}" onerror="this.style.visibility='hidden'">
+    <div class="tx">${esc(dn(l))}<br><span class="badge" style="background:${zc(l.uid)}">${esc(l.uid)}</span>${esc(l.name)} ・ ${esc(l.box)}<br><b style="color:#b45309">說明：${esc(e.note)}</b> <span class="muted">${esc(e.by||'')}</span></div>
+    <button class="btn gray" onclick="stOff('${esc(l.id)}')">修改</button>${e.photo?`<img src="${e.photo}" class="exph" style="width:100%;height:auto">`:''}</div>`}).join(''):'<div class="muted">沒有</div>';
   const g={};miss.forEach(l=>(g[l.box]=g[l.box]||[]).push(l));
   $('#missList').innerHTML=miss.length?Object.keys(g).map(b=>`<div style="margin-top:6px"><b>${esc(b)}</b>（${g[b].length}）
-    <div class="list">${g[b].map(l=>`<div class="it"><img src="${esc(l.img)}" loading="lazy" onerror="this.style.visibility='hidden'"><div class="tx">${esc(dn(l))}${rem(l)>1?' ×'+rem(l):''}${l.st&&l.st!=='onFlight'?' <b style="color:#92400e">['+esc(l.st)+']</b>':''}<br><span class="badge" style="background:${zc(l.uid)}">${esc(l.uid)}</span>${esc(l.name)}</div></div>`).join('')}</div></div>`).join(''):'<div class="muted">全部到齊 ✅</div>';
-  const {t,d}=totals();
-  const lines=[`【${V.name}入庫回報】${S.files.join('、')}`,`已到 ${d} / ${t} 件`];
-  if(miss.length){lines.push('','■ 入庫單上有、但沒到貨：');Object.keys(g).forEach(b=>g[b].forEach(l=>lines.push(`・${l.box}｜${l.uid} ${l.name}｜${dn(l)}${rem(l)>1?' ×'+rem(l):''}${l.st&&l.st!=='onFlight'?' ['+l.st+']':''}`)))}
-  if(S.ex.length){lines.push('','■ 例外（照片左上角編號對應）：');S.ex.forEach((e,i)=>lines.push(`${i+1}. ${e.type}｜${e.box}｜${e.note}${e.photo?'（有照片）':''}`))}
-  if(!miss.length&&!S.ex.length) lines.push('全部到齊，無例外。');
-  $('#repText').textContent=lines.join('\n');
+    <div class="list">${g[b].map(l=>`<div class="it"><img src="${esc(l.img)}" loading="lazy" onerror="this.style.visibility='hidden'"><div class="tx">${esc(dn(l))}${rem(l)>1?' ×'+rem(l):''}${l.st&&l.st!=='onFlight'?' <b style="color:#92400e">['+esc(l.st)+']</b>':''}<br><span class="badge" style="background:${zc(l.uid)}">${esc(l.uid)}</span>${esc(l.name)}</div></div>`).join('')}</div></div>`).join(''):'<div class="muted">沒有 ✅</div>';
+  // ---- 回報文字：三大類分開 ----
+  const {t,d}=totals();REP=[];
+  const L=[`【${V.name}入庫回報】${S.files.join('、')}`,`已到 ${d} / ${t} 件`];
+  const sec=(title,arr,cnt)=>{if(!arr.length)return;L.push('','━━━━━━━━━━',`■ ${title}（${cnt||arr.length+' 筆'}）`);arr.forEach(x=>L.push(x))};
+  const nm=miss.reduce((a,l)=>a+rem(l),0);
+  sec('未到貨',Object.keys(g).flatMap(b=>g[b].map(l=>`・${l.box}｜${l.uid} ${l.name}｜${dn(l)}${rem(l)>1?' ×'+rem(l):''}${l.st&&l.st!=='onFlight'?' ['+l.st+']':''}`)),nm+' 件');
+  const ph=(lab,e)=>{if(e.photo){REP.push({lab,e});return `（照片：${lab}）`}return ''};
+  const na=S.ex.filter(e=>catOf(e.type)==='na');
+  sec(T_NA,na.map((e,i)=>`${i+1}. ${e.box}箱｜${e.note||'（無說明）'}${ph(T_NA.slice(0,5)+' '+(i+1),e)}`));
+  const pd=[...pend.map(l=>({e:pendOf(l),l})),...S.ex.filter(e=>catOf(e.type)==='pd').map(e=>({e}))];
+  sec(T_PD,pd.map(({e,l},i)=>`${i+1}. ${e.box}箱｜`+(l?`${l.uid} ${l.name}｜${dn(l)}｜`:'')+`異常：${e.note||'（無說明）'}${ph('待確認 '+(i+1),e)}`));
+  const ot=S.ex.filter(e=>catOf(e.type)==='ot');
+  sec('數量不符／其他',ot.map((e,i)=>`${i+1}. ${e.type}｜${e.box}箱｜${e.note||'（無說明）'}${ph('其他 '+(i+1),e)}`));
+  if(!miss.length&&!S.ex.length&&!pend.length) L.push('','全部到齊，無異常。');
+  $('#repText').textContent=L.join('\n');
   renderSG();renderFiles();
 }
 async function delEx(i){if(await ask('刪除這筆例外？','刪除')){db.collection(C.ex).doc(S.ex[i]._id).delete().catch(e=>toast(e.message))}}
@@ -880,7 +959,7 @@ $('#exSave').onclick=()=>{
     close('#mEx');toast('已修改');exEditId=null;return;
   }
   db.collection(C.ex).add({bid:S.id,...v,t:Date.now(),by:me()}).catch(e=>toast('儲存失敗：'+e.message,4000));
-  close('#mEx');clearResult();toast('已記錄例外');
+  close('#mEx');clearResult();toast('已記錄');
 };
 $('#addExBtn').onclick=()=>openEx();
 
@@ -1031,19 +1110,19 @@ $('#delBatchBtn').onclick=async()=>{
   showList();
 };
 /* 例外照片蓋編號 → 分享到 LINE */
-function stampPhoto(e,n){return new Promise(res=>{const img=new Image();img.onload=()=>{
+function stampPhoto(e,lab){return new Promise(res=>{const img=new Image();img.onload=()=>{
   const c=document.createElement('canvas');c.width=img.width;c.height=img.height;const x=c.getContext('2d');x.drawImage(img,0,0);
   const fs=Math.max(28,Math.round(img.width/14)),pad=fs*.4;x.font=`bold ${fs}px sans-serif`;
-  const lab=`例外 ${n}`,sub=`${e.box}｜${(e.note||'').slice(0,24)}`;
+  const sub=`${e.box}箱｜${(e.note||'').slice(0,24)}`;
   x.fillStyle='#dc2626';x.fillRect(0,0,x.measureText(lab).width+pad*2,fs+pad*2);x.fillStyle='#fff';x.textBaseline='top';x.fillText(lab,pad,pad);
   const fs2=Math.round(fs*.55);x.font=`${fs2}px sans-serif`;const w2=Math.min(img.width,x.measureText(sub).width+pad*2);
   x.fillStyle='rgba(0,0,0,.6)';x.fillRect(0,fs+pad*2,w2,fs2+pad);x.fillStyle='#fff';x.fillText(sub,pad,fs+pad*2+pad/2);
-  c.toBlob(b=>res(new File([b],`例外${n}.jpg`,{type:'image/jpeg'})),'image/jpeg',.85)};img.onerror=()=>res(null);img.src=e.photo})}
+  c.toBlob(b=>res(new File([b],`${lab.replace(/\s+/g,'')}.jpg`,{type:'image/jpeg'})),'image/jpeg',.85)};img.onerror=()=>res(null);img.src=e.photo})}
 $('#shareRep').onclick=async()=>{
   const text=$('#repText').textContent;
   try{await navigator.clipboard.writeText(text)}catch(e){}
-  const files=(await Promise.all(S.ex.map((e,i)=>e.photo?stampPhoto(e,i+1):null))).filter(Boolean);
-  if(!files.length){toast('沒有例外照片，文字已複製，可直接貼到 LINE',3000);return}
+  const files=(await Promise.all(REP.map(r=>stampPhoto(r.e,r.lab)))).filter(Boolean);
+  if(!files.length){toast('沒有照片，文字已複製，可直接貼到 LINE',3000);return}
   if(navigator.canShare&&navigator.canShare({files})){
     try{await navigator.share({files,text});toast('文字也已複製，LINE 沒帶到文字的話長按貼上',3500)}
     catch(e){if(e.name!=='AbortError')toast('分享失敗：'+e.message,4000)}
