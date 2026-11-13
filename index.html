@@ -233,6 +233,7 @@
       <input type="file" id="addFile" accept=".xlsx,.xls" multiple style="display:none">
       <button class="btn gray" id="exportBtn" style="margin-top:8px">匯出配籃結果 (.xlsx)</button>
       <button class="btn bad" id="closeBtn" style="float:right;margin-top:8px">結案</button>
+      <button class="btn gray" id="delBatchBtn" style="float:right;margin:8px 8px 0 0;color:#b91c1c">刪除批次</button>
       <div style="clear:both"></div>
     </div>
   </section>
@@ -510,7 +511,7 @@ async function addFilesToBatch(files){
 async function dropIndex(ids){   // 移除的行：出庫索引裡屬於這批的也拿掉（避免舊籃提示、出庫查詢看到）
   const bid=S.id;
   for(const part of chunk(ids,200)){const ds=await Promise.all(part.map(id=>db.collection(C.items).doc(id).get()));
-    const b=db.batch();let n=0;ds.forEach(d=>{if(d.exists&&d.data().bid===bid&&!d.data().shipped){b.delete(d.ref);n++}});if(n)await b.commit()}
+    const b=db.batch();let n=0;ds.forEach(d=>{if(d.exists&&d.data().bid===bid&&!d.data().shipped){b.delete(db.collection(C.items).doc(d.id));n++}});if(n)await b.commit()}
 }
 function renderFiles(){
   if(!S||!$('#fileList'))return;
@@ -1011,6 +1012,23 @@ $('#closeBtn').onclick=async()=>{
   if(await ask(on?'把這個批次結案？\n（結案後不會出現在清單，可按「顯示已結案」找回）':'重新開啟這個批次？',on?'結案':'重新開啟')){
     await db.collection(C.batches).doc(S.id).update({closed:on});showList();
   }
+};
+$('#delBatchBtn').onclick=async()=>{
+  const id=S.id,nm=S.name,{d}=totals(),sg=(S.sgx||[]).filter(x=>!x.void).length;
+  if(!(await ask(`⚠️ 整個刪除「${nm}」？\n\n入庫單、配籃進度、例外紀錄（含照片）、SG 下載紀錄都會一起刪掉，不能復原。`+
+    (d?`\n\n目前已配籃 ${d} 件，衣服要從籃子拿出來重新配。`:'')+(sg?`\n\n這批已經下載過 ${sg} 次 SG 入庫檔，若已上傳到 SG，SG 那邊要自己處理。`:'')+
+    `\n\n只是不想看到的話，用「結案」就好（可以找回）。`,'下一步')))return;
+  const typed=prompt('確定刪除請輸入：刪除');if(typed!=='刪除'){toast('已取消');return}
+  try{
+    stopListen();
+    const items=await db.collection(C.items).where('bid','==',id).get();
+    const refs=[...items.docs.filter(x=>!x.data().shipped).map(x=>db.collection(C.items).doc(x.id))];
+    for(const c of [C.ex,C.sgx]){const q=await db.collection(c).where('bid','==',id).get();refs.push(...q.docs.map(x=>db.collection(c).doc(x.id)))}
+    refs.push(db.collection(C.lines).doc(id),db.collection(C.state).doc(id),db.collection(C.batches).doc(id));
+    for(const part of chunk(refs,400)){const b=db.batch();part.forEach(r=>b.delete(r));await b.commit()}
+    toast(`已刪除 ${nm}`,3000);
+  }catch(e){toast('刪除失敗：'+e.message,5000)}
+  showList();
 };
 /* 例外照片蓋編號 → 分享到 LINE */
 function stampPhoto(e,n){return new Promise(res=>{const img=new Image();img.onload=()=>{
