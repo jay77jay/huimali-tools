@@ -829,10 +829,51 @@ $('#ckDone').onclick=async()=>{const main=O.orders.find(x=>x.oid===CK),grp=group
 /* ============ 出庫清單 / 開啟 ============ */
 function stopListen(){unsub.forEach(f=>f());unsub=[]}
 let showClosed=false;
+/* ===== 結案清理：出掉的件，從入庫紀錄移除；整批出完就整批刪 ===== */
+async function purgeShipped(o){
+  const ids=o.orders.filter(x=>!x.cancel).flatMap(x=>x.items.filter(it=>it.s!=='none').map(it=>it.id));
+  const docs=await Promise.all(ids.map(id=>db.collection(C.items).doc(id).get()));
+  const mine=docs.filter(d=>d.exists&&d.data().outId===o.id), byB={};
+  mine.forEach(d=>(byB[d.data().bid]=byB[d.data().bid]||new Set()).add(d.id));
+  const ops=mine.map(d=>b=>b.delete(db.collection(C.items).doc(d.id)));let gone=0;
+  for(const bid of Object.keys(byB)){
+    const set=byB[bid], lr=db.collection(C.lines).doc(bid), sr=db.collection(C.state).doc(bid), br=db.collection(C.batches).doc(bid);
+    const [ld,sd,exq]=await Promise.all([lr.get(),sr.get(),db.collection(C.ex).where('bid','==',bid).get()]);
+    if(!ld.exists)continue;
+    const rest=ld.data().lines.filter(l=>!set.has(l.id)), st=sd.data()||{};
+    if(!rest.length){   // 整批都出完了 → 整批刪
+      gone++;const sg=await db.collection(C.sgx).where('bid','==',bid).get();
+      [...exq.docs.map(d=>db.collection(C.ex).doc(d.id)),...sg.docs.map(d=>db.collection(C.sgx).doc(d.id)),lr,sr,br].forEach(r=>ops.push(b=>b.delete(r)));
+      continue}
+    const rcv={...(st.rcv||{})},sgIn={...(st.sgIn||{})};set.forEach(id=>{delete rcv[id];delete sgIn[id]});
+    ops.push(b=>b.set(lr,{lines:rest}));
+    ops.push(b=>b.set(sr,{...st,rcv,sgIn}));
+    ops.push(b=>b.update(br,{lineCount:rest.length,qty:rest.reduce((a,l)=>a+l.qty,0),done:rest.reduce((a,l)=>a+Math.min(l.qty,rcv[l.id]||0),0)}));
+    exq.docs.filter(d=>d.data().lid&&set.has(d.data().lid)).forEach(d=>ops.push(b=>b.delete(db.collection(C.ex).doc(d.id))));
+  }
+  for(let i=0;i<ops.length;i+=400){const b=db.batch();ops.slice(i,i+400).forEach(f=>f(b));await b.commit()}
+  return {items:mine.length,batches:gone};
+}
+/* ===== 結案（或作廢）超過 30 天的出庫紀錄：連同 7-11 單號紀錄自動刪除 ===== */
+const KEEP_DAYS=30;
+async function autoClean(docs){
+  const lim=Date.now()-KEEP_DAYS*864e5;
+  const old=docs.filter(d=>{const x=d.data();return (x.closed&&x.closedAt&&x.closedAt<lim)||(x.void&&x.voidAt&&x.voidAt<lim)});
+  for(const d of old){
+    const q=await db.collection(C.codes).where('outId','==',d.id).get();
+    const refs=[...q.docs.map(c=>db.collection(C.codes).doc(c.id)),db.collection(C.out).doc(d.id)];
+    for(let i=0;i<refs.length;i+=400){const b=db.batch();refs.slice(i,i+400).forEach(r=>b.delete(r));await b.commit()}
+  }
+  return old.length;
+}
 document.getElementById('toggleClosed').onclick=e=>{e.preventDefault();showClosed=!showClosed;showList()};
 document.getElementById('closeOutBtn').onclick=async()=>{
   const on=!O.closed, act=O.orders.filter(o=>!o.cancel), left=act.filter(o=>!O.packed[o.oid]).length;
-  if(!(await ask(on?`把 ${O.name} 結案？`+(left&&!O.void?`\n\n⚠️ 還有 ${left} 張單沒檢查。`:'')+`\n\n結案後不會出現在清單，可按「顯示已結案」找回。`:`重新開啟 ${O.name}？`,on?'結案':'重新開啟')))return;
+  if(!(await ask(on?`把 ${O.name} 結案？`+(left&&!O.void?`\n\n⚠️ 還有 ${left} 張單沒檢查。`:'')+
+    (O.void||O.purged?'':`\n\n🧹 結案會刪掉這次出貨的件在入庫的紀錄（配籃、例外照片等），刪了就不能作廢。`)+`\n\n出庫紀錄保留 30 天（可重新下載檔案、檢查 7-11 單號重複），之後自動刪除。`:`重新開啟 ${O.name}？`,on?'結案':'重新開啟')))return;
+  if(on&&!O.void&&!O.purged){toast('清理入庫紀錄中…',10000);
+    try{const r=await purgeShipped(O);await db.collection(C.out).doc(O.id).update({purged:true,purgedAt:Date.now(),purgeInfo:r});toast(`已清理 ${r.items} 件${r.batches?`，${r.batches} 個入庫批次全部出完已刪除`:''}`,4000)}
+    catch(e){toast('清理失敗：'+e.message,5000);return}}
   await db.collection(C.out).doc(O.id).update({closed:on,closedAt:Date.now(),closedBy:me()});
   if(on)showList();
 };
@@ -844,6 +885,7 @@ async function showList(){
   try{
     const qs=await db.collection(C.out).where('v','==',VID).get();
     const ts=x=>x.data().createdAt&&x.data().createdAt.toDate?x.data().createdAt.toDate().getTime():0;
+    autoClean(qs.docs).then(n=>{if(n)toast(`已自動清除 ${n} 筆超過 ${KEEP_DAYS} 天的出庫紀錄`,3000)}).catch(e=>console.warn(e));
     const docs=qs.docs.filter(d=>showClosed||!d.data().closed).sort((a,b)=>ts(b)-ts(a)).slice(0,30);
     $('#toggleClosed').textContent=showClosed?'隱藏已結案':'顯示已結案';
     $('#outList').innerHTML=docs.length?docs.map(d=>{const x=d.data(),n=x.orders.filter(o=>!o.cancel).length,p=Object.values(x.packed||{}).filter(Boolean).length;
@@ -864,6 +906,7 @@ function renderOut(){
   if(!O) return;
   const isVoid=!!O.void;
   ['#dlMain','#dlSG','#printBtn','#voidBtn'].forEach(sel=>{$(sel).disabled=isVoid;$(sel).style.opacity=isVoid?.4:1});
+  if(O.purged){$('#voidBtn').disabled=true;$('#voidBtn').style.opacity=.4}
   $('#voidCard').querySelector('h3').textContent=isVoid?`已作廢（${O.voidBy||''} ${O.voidAt?new Date(O.voidAt).toLocaleString('zh-TW'):''}）`:'作廢這次出庫';
   const act=O.orders.filter(o=>!o.cancel), p=act.filter(o=>O.packed[o.oid]).length;
   $('#title').textContent=V.name+O.name+(O.closed?'（已結案）':'');$('#prog').textContent=`檢查 ${p}/${act.length}`;
@@ -906,6 +949,7 @@ $('#find').addEventListener('input',()=>renderOut());
 /* ============ 作廢出庫：還原 7-11 單號、已出庫的件、單號計數 ============ */
 $('#voidBtn').onclick=async()=>{
   if(!O||O.void) return;
+  if(O.purged) return toast('已結案清理過入庫紀錄，不能作廢',3500);
   const act=O.orders.filter(o=>!o.cancel);
   if(!(await ask(`確定作廢「${V.name}${O.name}」？\n單號 ${O.start}～${O.start+O.orders.length-1}，${act.length} 單\n\n託運單已經印出來貼上的話，請不要作廢。`,'作廢'))) return;
   toast('作廢中…',8000);
