@@ -149,6 +149,7 @@
   <!-- 批次清單 -->
   <section id="v-list" style="display:none">
     <div class="card">
+      <button class="btn big boxPhotoBtn" style="background:#0f766e;display:none;margin-bottom:8px" onclick="openBoxPhoto('new')">📷 箱子照片 → 自動找入庫單</button>
       <button class="btn big" onclick="$('#upFile').click()">＋ 上傳入庫單（建立新批次）</button>
       <button class="btn gray big" style="margin-top:8px" onclick="openLink('new')">🔗 貼上 Google 試算表連結</button>
       <input type="file" id="upFile" accept=".xlsx,.xls" multiple style="display:none">
@@ -233,6 +234,7 @@
     <div class="card">
       <button class="btn gray" onclick="$('#addFile').click()">＋ 加入入庫單 / 補資料</button>
       <button class="btn gray" style="margin-top:8px" onclick="openLink('add')">🔗 貼上 Google 試算表連結（補件）</button>
+      <button class="btn gray boxPhotoBtn" style="margin-top:8px;display:none" onclick="openBoxPhoto('add')">📷 箱子照片找入庫單（補件）</button>
       <p class="muted" style="margin:6px 0 8px">加入新的入庫單；或選「同名」的入庫單 → 用新版內容更新（品名、數量、收件人…），已配籃的進度保留。</p>
       <div id="fileList" style="margin-bottom:8px"></div>
       <input type="file" id="addFile" accept=".xlsx,.xls" multiple style="display:none">
@@ -281,6 +283,19 @@
   <input type="text" id="lkName">
   <p class="muted" id="lkMsg" style="color:var(--bad)"></p>
   <div class="row"><button class="btn gray" id="lkCancel">取消</button><button class="btn" id="lkGo">讀取</button></div>
+</div></div>
+<div class="modal" id="mBox"><div class="sheet">
+  <h2 id="bxTitle">箱子照片 → 自動找入庫單</h2>
+  <p class="muted" style="margin-top:0">拍到貨外箱的標籤（例 *0M5FV311*），可一次選多張或拼成一張。會讀條碼／文字裡的箱號，到 Google Drive「日本集運表單」資料夾找同名入庫單。</p>
+  <div class="row" style="margin-top:0"><button class="btn" id="bxPick">📷 拍照 / 選照片</button></div>
+  <input type="file" id="bxFile" accept="image/*" multiple style="display:none">
+  <div id="bxThumbs" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"></div>
+  <div style="display:flex;gap:6px;margin-top:8px"><input type="text" id="bxManual" placeholder="手動輸入箱號，例 0M5FV311" style="flex:1;text-transform:uppercase"><button class="btn gray" id="bxAdd" style="flex:none">加入</button></div>
+  <p id="bxMsg" class="muted" style="white-space:pre-line"></p>
+  <button class="btn" id="bxDrive" style="display:none;width:100%">🔑 連結 Google Drive 找入庫單</button>
+  <div id="bxList" class="list"></div>
+  <div id="bxMiss"></div>
+  <div class="row"><button class="btn gray" id="bxCancel">取消</button><button class="btn ok" id="bxGo" disabled>建立批次</button></div>
 </div></div>
 <div class="modal" id="mAsk"><div class="sheet"><h2 id="askMsg" style="white-space:pre-line"></h2><div class="row"><button class="btn gray" id="askNo">取消</button><button class="btn bad" id="askYes">確定</button></div></div></div>
 
@@ -457,6 +472,267 @@ $('#lkGo').onclick=async()=>{
   }catch(e){$('#lkMsg').textContent='⚠️ '+e.message}
 };
 
+/* ================= 箱子照片 → 自動到 Google Drive 找入庫單 =================
+   1. 讀照片裡的箱號：Android Chrome 用內建 BarcodeDetector 讀條碼（最準）＋ Tesseract 文字辨識（正、倒各一次，標籤常倒貼）
+   2. 用登入的 Google 帳號取得「Drive 唯讀」權限（第一次會跳授權視窗，約 50 分鐘內不用再按）
+   3. 列出廠商 Drive 資料夾（含子資料夾，例如「俬儲已下載」）裡的試算表，用檔名裡的箱號比對
+      辨識常把 5/S、0/O、1/I、8/B 看錯，比對時當成同一個字；只差一個字且只有一個候選時也算
+   4. 勾選後直接讀內容建立批次（或補件加進目前批次） */
+const DRIVE_CFG={huimali:{folder:'1oyjidp0kiB7aruUcuXcmsVokDSX7cm8v',contact:'吳幸儒 WILL WU'}};
+const dCfg=()=>V&&V.driveFolder?{folder:V.driveFolder,contact:V.driveContact||''}:DRIVE_CFG[VID]||null;
+function showBoxBtns(){document.querySelectorAll('.boxPhotoBtn').forEach(b=>b.style.display=dCfg()?'':'none')}
+const GSHEET='application/vnd.google-apps.spreadsheet', GFOLDER='application/vnd.google-apps.folder';
+let BX={mode:'new',toks:new Map(),files:null,sel:new Set(),busy:false}, dTok=null;
+const boxCanon=s=>s.replace(/[OQD]/g,'0').replace(/[IL]/g,'1').replace(/S/g,'5').replace(/B/g,'8').replace(/Z/g,'2');
+function boxesIn(name){return [...String(name).toUpperCase().matchAll(new RegExp(`(?:^|[^A-Z0-9])(${BOX})`,'g'))].map(m=>m[1])}
+function openBoxPhoto(mode){
+  BX.cancel=true;   // 停掉上一次還在跑的辨識
+  BX={mode,toks:new Map(),files:BX.files,sel:new Set(),auto:new Set(),busy:false,ocr:false};   // Drive 清單同一次開啟頁面內沿用（重新整理會重抓）
+  $('#bxTitle').textContent=mode==='new'?'箱子照片 → 自動找入庫單':'箱子照片找入庫單（補件到這批）';
+  $('#bxThumbs').innerHTML='';$('#bxManual').value='';$('#bxMsg').textContent='';$('#bxList').innerHTML='';$('#bxMiss').innerHTML='';
+  $('#bxDrive').style.display='none';bxRender();
+  $('#mBox').classList.add('on');
+}
+$('#bxCancel').onclick=()=>{BX.cancel=true;close('#mBox')};
+$('#bxPick').onclick=()=>$('#bxFile').click();
+$('#bxFile').onchange=async e=>{
+  const fs=[...e.target.files];e.target.value='';if(!fs.length)return;
+  for(const f of fs){const u=URL.createObjectURL(f);$('#bxThumbs').insertAdjacentHTML('beforeend',`<img src="${u}" style="height:70px;border-radius:6px;border:1px solid var(--line)">`)}
+  if(!driveTok()&&!BX.files)$('#bxDrive').style.display='';   // 辨識的同時可以先按授權
+  const me=BX;me.ocr=true;bxRender();
+  try{
+    for(let i=0;i<fs.length&&!me.cancel;i++){
+      await readBoxPhoto(fs[i],me,m=>{if(BX===me)$('#bxMsg').textContent=`辨識照片${fs.length>1?` ${i+1}/${fs.length}`:''}：${m}`+(me.sel.size?'\n（已找到的單可以直接按下面按鈕，不用等辨識跑完）':'')},()=>{if(BX===me)bxAfterRead()});
+    }
+    if(BX===me)$('#bxMsg').textContent=me.toks.size?'':'照片裡沒有讀到箱號，請拍清楚一點（標籤佔畫面大一點）或手動輸入';
+  }catch(err){if(BX===me)$('#bxMsg').textContent='⚠️ 辨識失敗：'+err.message+'\n可以在上面手動輸入箱號'}
+  me.ocr=false;if(BX===me)await bxAfterRead();
+};
+$('#bxAdd').onclick=async()=>{
+  const ts=$('#bxManual').value.toUpperCase().split(/[\s,，、\/]+/).map(x=>x.replace(/[^A-Z0-9]/g,'')).filter(x=>x.length>=6);
+  if(!ts.length)return toast('請輸入箱號');
+  ts.forEach(t=>BX.toks.set(t,'key'));$('#bxManual').value='';await bxAfterRead();
+};
+$('#bxManual').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();$('#bxAdd').click()}});
+$('#bxDrive').onclick=async()=>{
+  try{await getDriveToken()}catch(e){
+    if(e.code==='auth/popup-closed-by-user'||e.code==='auth/cancelled-popup-request')return;
+    if(e.code==='auth/user-mismatch')return $('#bxMsg').textContent='⚠️ 請選跟目前登入相同的 Google 帳號';
+    if(e.code==='auth/popup-blocked')return $('#bxMsg').textContent='⚠️ 授權視窗被擋住了：請允許彈出式視窗後再按一次';
+    return $('#bxMsg').textContent='⚠️ 授權失敗：'+(e.code||e.message);
+  }
+  await bxAfterRead();
+};
+$('#bxGo').onclick=bxGo;
+
+/* ---- 照片辨識 ---- */
+function loadTess(){
+  if(window.Tesseract) return Promise.resolve();
+  return new Promise((res,rej)=>{const sc=document.createElement('script');
+    sc.src='https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';sc.onload=res;sc.onerror=()=>rej(new Error('文字辨識元件下載失敗，請確認網路'));document.head.appendChild(sc)});
+}
+let tessW=null;
+async function tessWorker(){
+  if(tessW) return tessW;
+  await loadTess();
+  tessW=Tesseract.createWorker('eng').then(async w=>{
+    await w.setParameters({tessedit_char_whitelist:'*0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ',tessedit_pageseg_mode:'11'});return w});   // 11＝零散文字（拼圖照片）
+  tessW.catch(()=>{tessW=null});
+  return tessW;
+}
+function loadImg(file){return new Promise((res,rej)=>{const u=URL.createObjectURL(file),img=new Image();img.onload=()=>res(img);img.onerror=()=>rej(new Error('讀不到照片'));img.src=u})}
+// 由快到慢分幾段辨識，每段讀到新的候選就呼叫 onNew（清單會邊辨識邊出現，不用等全部跑完）
+//   條碼：BarcodeDetector（Android）→ ZXing 切格掃（一次只能讀一條，所以把照片切成小塊）
+//   文字：Tesseract 整張 → 2×2 → 3×3 切塊，各做正、倒兩個方向
+async function readBoxPhoto(file,bx,msg,onNew){
+  const img=await loadImg(file), W=img.naturalWidth, H=img.naturalHeight;
+  const add=(t,src)=>{t=String(t||'').toUpperCase().replace(/[^A-Z0-9]/g,'');if(t.length<6||t.length>24)return;
+    if(!bx.toks.has(t)||(src==='bar'&&bx.toks.get(t)!=='bar')){bx.toks.set(t,src);return 1}};
+  const tile=(n,i,j,rot,maxPx)=>{   // n×n 格、互相重疊一半
+    const sw=n===1?W:2*W/(n+1), sh=n===1?H:2*H/(n+1), x0=n===1?0:i*W/(n+1), y0=n===1?0:j*H/(n+1), k=Math.min(4,maxPx/Math.max(sw,sh));
+    const c=document.createElement('canvas');c.width=Math.round(sw*k);c.height=Math.round(sh*k);const x=c.getContext('2d');
+    x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);if(rot){x.translate(c.width,c.height);x.rotate(Math.PI)}
+    x.drawImage(img,x0,y0,sw,sh,0,0,c.width,c.height);return c};
+  if('BarcodeDetector' in window){
+    try{const det=new BarcodeDetector({formats:['code_39','code_128']});let nw=0;
+      for(const r of await det.detect(tile(1,0,0,0,2400))) nw|=add(r.rawValue,'bar');if(nw)onNew()}catch(e){}
+  }
+  let zx=null;
+  const zxRun=async ns=>{
+    if(!zx){try{await loadZX()}catch(e){return}const Z=window.ZXing,h=new Map();
+      h.set(Z.DecodeHintType.POSSIBLE_FORMATS,[Z.BarcodeFormat.CODE_39,Z.BarcodeFormat.CODE_128]);h.set(Z.DecodeHintType.TRY_HARDER,true);
+      zx=new Z.MultiFormatReader();zx.setHints(h)}
+    const Z=window.ZXing;
+    for(const n of ns){let nw=0;for(let i=0;i<n;i++)for(let j=0;j<n;j++){if(bx.cancel)return;
+      try{nw|=add(zx.decode(new Z.BinaryBitmap(new Z.HybridBinarizer(new Z.HTMLCanvasElementLuminanceSource(tile(n,i,j,0,1800))))).getText(),'bar')}catch(e){}}
+      if(nw)onNew();await new Promise(r=>setTimeout(r,0))}};
+  const ocrRun=async n=>{
+    const w=await tessWorker();
+    for(let i=0;i<n;i++)for(let j=0;j<n;j++)for(const rot of [0,1]){if(bx.cancel)return;
+      const {data}=await w.recognize(tile(n,i,j,rot,n===1?2000:1600));let nw=0;
+      for(const t of ocrTokens(data.text)) nw|=add(t,'ocr');if(nw)onNew()}};
+  msg('讀條碼…');await zxRun([1,2,3]);
+  msg('文字辨識（1/3）…第一次會下載辨識元件');await ocrRun(1);
+  msg('文字辨識（2/3）…');await ocrRun(2);
+  msg('讀條碼（細）…');await zxRun([4,5]);
+  msg('文字辨識（3/3）…');await ocrRun(3);
+}
+function ocrTokens(text){
+  const set=new Set();
+  for(const line of String(text).toUpperCase().split(/\n/)){
+    const parts=[line.replace(/[^A-Z0-9*]/g,''),...line.split(/\s+/).map(x=>x.replace(/[^A-Z0-9*]/g,''))];   // 整行去空白（避免箱號被拆開）＋逐字
+    for(const p of parts) for(const seg of p.split('*')) if(seg.length>=7&&seg.length<=24) set.add(seg);
+  }
+  return set;
+}
+
+/* ---- Google Drive ---- */
+function driveTok(){
+  if(dTok&&dTok.exp>Date.now()&&dTok.u===auth.currentUser.uid) return dTok.tk;
+  try{const t=JSON.parse(sessionStorage.getItem('hm_dt')||'null');if(t&&t.exp>Date.now()&&t.u===auth.currentUser.uid){dTok=t;return t.tk}}catch(e){}
+  return null;
+}
+async function getDriveToken(){   // 要在按鈕點擊裡呼叫（會跳 Google 授權視窗）
+  const p=new firebase.auth.GoogleAuthProvider();
+  p.addScope('https://www.googleapis.com/auth/drive.readonly');
+  if(auth.currentUser.email) p.setCustomParameters({login_hint:auth.currentUser.email});
+  const r=await auth.currentUser.reauthenticateWithPopup(p);
+  const tk=r.credential&&r.credential.accessToken;if(!tk) throw new Error('沒有拿到 Drive 權限');
+  dTok={tk,u:auth.currentUser.uid,exp:Date.now()+50*60e3};
+  try{sessionStorage.setItem('hm_dt',JSON.stringify(dTok))}catch(e){}
+  return tk;
+}
+async function gd(path){
+  const tk=driveTok(); if(!tk) throw Object.assign(new Error('需要連結 Google Drive'),{auth:1});
+  const r=await fetch('https://www.googleapis.com/drive/v3/'+path,{headers:{Authorization:'Bearer '+tk}});
+  if(r.status===401){dTok=null;try{sessionStorage.removeItem('hm_dt')}catch(e){}throw Object.assign(new Error('Drive 授權過期，請再連結一次'),{auth:1})}
+  if(!r.ok){let m='';try{m=(await r.json()).error.message}catch(e){}
+    if(/has not been used|is disabled/i.test(m)) m='這個 Firebase 專案還沒啟用 Google Drive API（請管理員到 Google Cloud Console 啟用）';
+    throw new Error('Drive：'+(m||r.status))}
+  return r;
+}
+async function listFolder(id){
+  const out=[];let pt='';
+  do{const q=encodeURIComponent(`'${id}' in parents and trashed=false`);
+    const r=await (await gd(`files?q=${q}&fields=nextPageToken,files(id,name,mimeType,modifiedTime)&pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true${pt?'&pageToken='+pt:''}`)).json();
+    out.push(...(r.files||[]));pt=r.nextPageToken}while(pt);
+  return out;
+}
+async function driveFiles(){
+  if(BX.files) return BX.files;
+  const isSheet=f=>f.mimeType===GSHEET||/\.xlsx?$/i.test(f.name);
+  const root=await listFolder(dCfg().folder), files=root.filter(isSheet).map(f=>({...f,sub:''}));
+  for(const s of root.filter(f=>f.mimeType===GFOLDER)) (await listFolder(s.id)).filter(isSheet).forEach(f=>files.push({...f,sub:s.name}));
+  files.forEach(f=>f.boxes=boxesIn(f.name));
+  return BX.files=files;
+}
+async function readDriveFile(f){
+  const name=f.name.replace(/\.xlsx?$/i,'');
+  if(f.mimeType===GSHEET){
+    try{const txt=await (await gd(`files/${f.id}/export?mimeType=text%2Fcsv`)).text();return {name,wb:XLSX.read(txt,{type:'string',raw:true})}}   // 跟貼連結一樣讀第一個工作表
+    catch(e){if(e.auth)throw e;return readSheetLink(`https://docs.google.com/spreadsheets/d/${f.id}/edit`,name)}
+  }
+  const buf=await (await gd(`files/${f.id}?alt=media&supportsAllDrives=true`)).arrayBuffer();
+  return {name,wb:XLSX.read(buf,{type:'array'})};
+}
+
+/* ---- 比對 ---- */
+// 箱號(8 碼) 在辨識字串裡的最小編輯距離（字串前後多出來的字不算；中間多一個、少一個、錯一個都算 1）
+function boxDist(box,t){
+  let prev=new Array(t.length+1).fill(0);
+  for(let i=1;i<=box.length;i++){const cur=[i];
+    for(let j=1;j<=t.length;j++)cur[j]=Math.min(prev[j]+1,cur[j-1]+1,prev[j-1]+(box[i-1]===t[j-1]?0:1));prev=cur}
+  return Math.min(...prev);
+}
+function matchBoxes(toks,files){
+  const all=[...new Set(files.flatMap(f=>f.boxes))], canon=new Map(all.map(b=>[b,boxCanon(b)]));
+  const hit=new Map(), miss=new Map();   // 箱號 → 來源
+  const rank={bar:3,key:3,ocr:2,'key~':1,'ocr~':0};
+  const put=(b,src)=>{if(!hit.has(b)||rank[src]>rank[hit.get(b)])hit.set(b,src)};
+  for(const [t,src] of toks){
+    const ct=boxCanon(t);
+    if(src==='bar'){if(all.includes(t))put(t,'bar');else miss.set(t,'bar');continue}   // 條碼讀到的一定準，不做模糊比對
+    const ds=all.map(b=>[b,boxDist(canon.get(b),ct)]), best=Math.min(Infinity,...ds.map(x=>x[1]));
+    const top=ds.filter(x=>x[1]===best);
+    if(best===0){top.forEach(([b])=>put(b,src));continue}
+    if(best===1&&top.length===1&&t.length<=10){put(top[0][0],src+'~');continue}   // 只差一個字、而且只有一個候選
+    const fix=t.replace(/^[OQD]/,'0');
+    if(src==='key'||(t.length===8&&new RegExp(`^${BOX}$`).test(fix))) miss.set(src==='key'?t:fix,src);
+  }
+  for(const b of hit.keys()) miss.delete(b);
+  return {hit,miss};
+}
+async function batchBoxMap(){   // 已經建過批次的箱號 → 批次名稱
+  const m=new Map();
+  try{const qs=await db.collection(C.batches).where('v','==',VID).get();
+    qs.docs.forEach(d=>{const b=d.data();(b.files||[]).forEach(f=>boxesIn(f).forEach(x=>{if(!m.has(x))m.set(x,b.name+(b.closed?'（已結案）':''))}))})}catch(e){}
+  return m;
+}
+async function bxAfterRead(){
+  if(BX.running){BX.again=true;return}   // 辨識一直有新結果進來：跑完這次再跑一次
+  const me=BX;me.running=true;
+  try{do{me.again=false;await bxMatch(me)}while(me.again&&BX===me)}finally{me.running=false}
+}
+async function bxMatch(me){
+  if(!me.toks.size){bxRender();return}
+  if(!driveTok()&&!me.files){$('#bxDrive').style.display='';if(!me.ocr)$('#bxMsg').textContent=`讀到 ${me.toks.size} 個候選，請按下面按鈕連結 Google Drive（第一次會詢問授權）`;bxRender();return}
+  $('#bxDrive').style.display='none';
+  try{
+    if(!me.files||!me.used){me.busy=true;if(!me.ocr)$('#bxMsg').textContent='到 Google Drive 找入庫單…';bxRender()}
+    const [files,used]=await Promise.all([driveFiles(),me.used||batchBoxMap()]);me.used=used;
+    if(BX!==me)return;
+    const {hit,miss}=matchBoxes(me.toks,files);
+    const inThis=new Set(S&&me.mode==='add'?S.files.flatMap(boxesIn):[]);
+    me.rows=[...hit].map(([b,src])=>({b,src,fs:files.filter(f=>f.boxes.includes(b)).sort((x,y)=>(x.sub?1:0)-(y.sub?1:0)||String(y.modifiedTime).localeCompare(String(x.modifiedTime)))}));
+    me.miss=[...miss.keys()];
+    for(const r of me.rows){if(me.auto.has(r.b))continue;me.auto.add(r.b);   // 新出現的箱號才自動勾，不蓋掉同仁手動改的
+      const f=r.fs.find(z=>!z.sub);if(f&&!used.has(r.b)&&!inThis.has(r.b))me.sel.add(f.id)}   // 預設勾：主資料夾裡最新的那張、而且還沒建過批次
+    if(!me.ocr)$('#bxMsg').textContent=me.rows.length?'':'Drive 資料夾裡沒有找到對應的入庫單';
+  }catch(e){
+    if(e.auth)$('#bxDrive').style.display='';$('#bxMsg').textContent='⚠️ '+e.message;
+  }
+  me.busy=false;bxRender();
+}
+function bxRender(){
+  const rows=BX.rows||[], used=BX.used||new Map();
+  const inThis=new Set(S&&BX.mode==='add'?S.files.flatMap(boxesIn):[]);
+  const srcTag={bar:'條碼',ocr:'文字','ocr~':'⚠️文字近似，請核對',key:'手動','key~':'⚠️手動近似，請核對'};
+  $('#bxList').innerHTML=rows.map(r=>`<div class="it" style="display:block">
+    <div><b style="font-size:18px">✅ ${esc(r.b)}</b> <span class="muted">${srcTag[r.src]||''}</span>
+      ${inThis.has(r.b)?'<span class="badge" style="background:#b45309">這批已有</span>':used.has(r.b)?`<span class="badge" style="background:#b45309">已在批次：${esc(used.get(r.b))}</span>`:''}</div>
+    ${r.fs.map(f=>`<label style="display:flex;gap:8px;align-items:center;margin-top:4px;font-size:15px"><input type="checkbox" data-fid="${esc(f.id)}" ${BX.sel.has(f.id)?'checked':''} style="width:22px;height:22px;flex:none">
+      <span>📄 ${esc(f.name)}${f.sub?` <span class="muted">（在「${esc(f.sub)}」＝下載過）</span>`:''} <a href="https://drive.google.com/open?id=${esc(f.id)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">開啟</a></span></label>`).join('')}</div>`).join('');
+  $('#bxList').querySelectorAll('[data-fid]').forEach(cb=>cb.onchange=()=>{cb.checked?BX.sel.add(cb.dataset.fid):BX.sel.delete(cb.dataset.fid);bxRender()});
+  const miss=BX.miss||[], ct=(dCfg()||{}).contact;
+  const lineMsg=miss.length&&ct?`${miss.join('、')} @${ct} 這箱沒有提供入庫單~ 再麻煩您`:'';
+  $('#bxMiss').innerHTML=miss.length?`<div class="card" style="background:#fef2f2;margin-top:8px;padding:10px">
+    <b style="color:var(--bad)">❌ Drive 找不到入庫單：${miss.map(esc).join('、')}</b>
+    <div class="muted" style="margin:4px 0">這箱先放旁邊，不要拆箱配籃。若是辨識錯字，請在上面手動輸入正確箱號。</div>
+    ${lineMsg?`<div style="background:#fff;border:1px solid var(--line);border-radius:8px;padding:8px;font-size:14px">${esc(lineMsg)}</div>
+    <button class="btn gray" style="margin-top:6px" id="bxCopy">複製 LINE 訊息</button>`:''}</div>`:'';
+  if($('#bxCopy'))$('#bxCopy').onclick=()=>{navigator.clipboard.writeText(lineMsg).then(()=>toast('已複製'),()=>toast('無法複製，請長按文字複製'))};
+  const n=BX.sel.size;
+  $('#bxGo').disabled=BX.busy||!n;
+  $('#bxGo').textContent=(BX.mode==='new'?'建立批次':'加入這批')+(n?`（${n} 張入庫單）`:'');
+}
+async function bxGo(){
+  const files=(BX.files||[]).filter(f=>BX.sel.has(f.id));if(!files.length)return;
+  BX.cancel=true;BX.busy=true;bxRender();   // 已經找到要的單了：停止還在跑的辨識
+  try{
+    const got=[];
+    for(let i=0;i<files.length;i++){
+      $('#bxMsg').textContent=`讀取入庫單 ${i+1}/${files.length}：${files[i].name}`;
+      const f=await readDriveFile(files[i]);parseWorkbook(f.wb,f.name);got.push(f);   // 先檢查欄位
+    }
+    close('#mBox');
+    if(BX.mode==='new'){toast('建立批次中…',10000);const id=await createBatch(got);await openBatch(id)}
+    else await addFilesToBatch(got);
+  }catch(e){
+    if(e.auth)$('#bxDrive').style.display='';
+    $('#bxMsg').textContent='⚠️ '+e.message;
+  }
+  BX.busy=false;bxRender();
+}
 
 // 讀檔前先判斷是不是真的 Excel／CSV，給看得懂的錯誤訊息
 async function readBook(file){
@@ -557,7 +833,7 @@ async function showList(){
   $('#whoami').innerHTML=`登入：${esc(me())}　<a href="#" id="logout">登出</a>`;
   $('#logout').onclick=e=>{e.preventDefault();auth.signOut()};
   $('#toOut').href='./out.html?v='+VID;$('#toVendor').onclick=e=>{e.preventDefault();showVendors()};
-  $('#batchList').innerHTML='<div class="empty">讀取中…</div>';
+  $('#batchList').innerHTML='<div class="empty">讀取中…</div>';showBoxBtns();
   try{
     const qs=await db.collection(C.batches).where('v','==',VID).get();
     const ts=b=>b.createdAt&&b.createdAt.toDate?b.createdAt.toDate().getTime():0;
@@ -587,7 +863,7 @@ async function openBatch(id){
   unsub.push(db.collection(C.sgx).where('bid','==',id).onSnapshot(q=>{if(!S||S.id!==id)return;S.sgx=q.docs.map(d=>({_id:d.id,...d.data()})).sort((a,b)=>a.at-b.at);renderSG()}));
   unsub.push(db.collection(C.ex).where('bid','==',id).onSnapshot(q=>{if(!S||S.id!==id)return;const all=q.docs.map(d=>({_id:d.id,...d.data()})).sort((a,b)=>a.t-b.t);S.ex=all.filter(x=>!x.lid);S.lst={};all.filter(x=>x.lid).forEach(x=>S.lst[x.lid]=x);render(false)}));
   unsub.push(db.collection(C.batches).doc(id).onSnapshot(d=>{if(d.exists&&S&&S.id===id){S.name=d.data().name;S.files=d.data().files;S.closed=d.data().closed;S.locked=!!d.data().locked;render(false)}}));
-  render();show('match');
+  render();show('match');showBoxBtns();
   loadPrior().catch(e=>console.warn(e));
 }
 
