@@ -477,9 +477,12 @@ $('#lkGo').onclick=async()=>{
    2. 用登入的 Google 帳號取得「Drive 唯讀」權限（第一次會跳授權視窗，約 50 分鐘內不用再按）
    3. 列出廠商 Drive 資料夾（含子資料夾，例如「俬儲已下載」）裡的試算表，用檔名裡的箱號比對
       辨識常把 5/S、0/O、1/I、8/B 看錯，比對時當成同一個字；只差一個字且只有一個候選時也算
-   4. 勾選後直接讀內容建立批次（或補件加進目前批次） */
-const DRIVE_CFG={huimali:{folder:'1oyjidp0kiB7aruUcuXcmsVokDSX7cm8v',contact:'吳幸儒 WILL WU'}};
-const dCfg=()=>V&&V.driveFolder?{folder:V.driveFolder,contact:V.driveContact||''}:DRIVE_CFG[VID]||null;
+   4. 勾選後直接讀內容建立批次（或補件加進目前批次）
+   5. 建好後把用到的入庫單搬進「俬儲已下載」子資料夾（跟手動在 Drive 歸檔一樣） */
+const DRIVE_CFG={huimali:{folder:'1oyjidp0kiB7aruUcuXcmsVokDSX7cm8v',contact:'吳幸儒 WILL WU',archive:'俬儲已下載'}};
+const dCfg=()=>V&&V.driveFolder?{folder:V.driveFolder,contact:V.driveContact||'',archive:V.driveArchive||''}:DRIVE_CFG[VID]||null;
+// 要能把用過的入庫單搬到「已下載」子資料夾，所以要完整 Drive 權限（唯讀不能搬）
+const DRIVE_SCOPE='https://www.googleapis.com/auth/drive';
 function showBoxBtns(){document.querySelectorAll('.boxPhotoBtn').forEach(b=>b.style.display=dCfg()?'':'none')}
 const GSHEET='application/vnd.google-apps.spreadsheet', GFOLDER='application/vnd.google-apps.folder';
 let BX={mode:'new',toks:new Map(),files:null,sel:new Set(),busy:false}, dTok=null;
@@ -588,23 +591,24 @@ function ocrTokens(text){
 
 /* ---- Google Drive ---- */
 function driveTok(){
-  if(dTok&&dTok.exp>Date.now()&&dTok.u===auth.currentUser.uid) return dTok.tk;
-  try{const t=JSON.parse(sessionStorage.getItem('hm_dt')||'null');if(t&&t.exp>Date.now()&&t.u===auth.currentUser.uid){dTok=t;return t.tk}}catch(e){}
+  const ok=t=>t&&t.exp>Date.now()&&t.u===auth.currentUser.uid&&t.sc===DRIVE_SCOPE;   // 舊的唯讀授權不算，要重新授權
+  if(ok(dTok)) return dTok.tk;
+  try{const t=JSON.parse(sessionStorage.getItem('hm_dt')||'null');if(ok(t)){dTok=t;return t.tk}}catch(e){}
   return null;
 }
 async function getDriveToken(){   // 要在按鈕點擊裡呼叫（會跳 Google 授權視窗）
   const p=new firebase.auth.GoogleAuthProvider();
-  p.addScope('https://www.googleapis.com/auth/drive.readonly');
+  p.addScope(DRIVE_SCOPE);
   if(auth.currentUser.email) p.setCustomParameters({login_hint:auth.currentUser.email});
   const r=await auth.currentUser.reauthenticateWithPopup(p);
   const tk=r.credential&&r.credential.accessToken;if(!tk) throw new Error('沒有拿到 Drive 權限');
-  dTok={tk,u:auth.currentUser.uid,exp:Date.now()+50*60e3};
+  dTok={tk,u:auth.currentUser.uid,sc:DRIVE_SCOPE,exp:Date.now()+50*60e3};
   try{sessionStorage.setItem('hm_dt',JSON.stringify(dTok))}catch(e){}
   return tk;
 }
-async function gd(path){
+async function gd(path,opt={}){
   const tk=driveTok(); if(!tk) throw Object.assign(new Error('需要連結 Google Drive'),{auth:1});
-  const r=await fetch('https://www.googleapis.com/drive/v3/'+path,{headers:{Authorization:'Bearer '+tk}});
+  const r=await fetch('https://www.googleapis.com/drive/v3/'+path,{...opt,headers:{Authorization:'Bearer '+tk,...(opt.headers||{})}});
   if(r.status===401){dTok=null;try{sessionStorage.removeItem('hm_dt')}catch(e){}throw Object.assign(new Error('Drive 授權過期，請再連結一次'),{auth:1})}
   if(!r.ok){let m='';try{m=(await r.json()).error.message}catch(e){}
     if(/has not been used|is disabled/i.test(m)) m='這個 Firebase 專案還沒啟用 Google Drive API（請管理員到 Google Cloud Console 啟用）';
@@ -622,9 +626,24 @@ async function driveFiles(){
   if(BX.files) return BX.files;
   const isSheet=f=>f.mimeType===GSHEET||/\.xlsx?$/i.test(f.name);
   const root=await listFolder(dCfg().folder), files=root.filter(isSheet).map(f=>({...f,sub:''}));
-  for(const s of root.filter(f=>f.mimeType===GFOLDER)) (await listFolder(s.id)).filter(isSheet).forEach(f=>files.push({...f,sub:s.name}));
+  const subs=root.filter(f=>f.mimeType===GFOLDER);
+  for(const s of subs) (await listFolder(s.id)).filter(isSheet).forEach(f=>files.push({...f,sub:s.name}));
   files.forEach(f=>f.boxes=boxesIn(f.name));
+  files.archive=(subs.find(f=>f.name===dCfg().archive)||{}).id||null;
   return BX.files=files;
+}
+// 建好批次後把入庫單搬進「俬儲已下載」；失敗不影響批次，只提示
+async function archiveDriveFiles(files){
+  const cfg=dCfg(), all=BX.files, dest=all&&all.archive;
+  const todo=files.filter(f=>!f.sub);
+  if(!todo.length||!cfg.archive) return '';
+  if(!dest) return `\n⚠️ Drive 裡找不到「${cfg.archive}」資料夾，入庫單沒有搬移`;
+  const bad=[];
+  for(const f of todo){
+    try{await gd(`files/${f.id}?addParents=${dest}&removeParents=${cfg.folder}&supportsAllDrives=true&fields=id`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:'{}'});f.sub=cfg.archive}
+    catch(e){bad.push(`${f.name}（${e.message}）`)}
+  }
+  return bad.length?`\n⚠️ 下面這些沒搬成功，請到 Drive 手動搬到「${cfg.archive}」：\n`+bad.join('\n'):`\n📁 ${todo.length} 張入庫單已搬到「${cfg.archive}」`;
 }
 async function readDriveFile(f){
   const name=f.name.replace(/\.xlsx?$/i,'');
@@ -725,8 +744,10 @@ async function bxGo(){
       const f=await readDriveFile(files[i]);parseWorkbook(f.wb,f.name);got.push(f);   // 先檢查欄位
     }
     close('#mBox');
-    if(BX.mode==='new'){toast('建立批次中…',10000);const id=await createBatch(got);await openBatch(id)}
-    else await addFilesToBatch(got);
+    let ok;
+    if(BX.mode==='new'){toast('建立批次中…',10000);const id=await createBatch(got);ok=true;await openBatch(id)}
+    else ok=await addFilesToBatch(got,true);
+    if(ok){const m=await archiveDriveFiles(files);if(m)await ask(m.trim(),'好',true)}
   }catch(e){
     if(e.auth)$('#bxDrive').style.display='';
     $('#bxMsg').textContent='⚠️ '+e.message;
@@ -764,7 +785,7 @@ async function createBatch(files){
 }
 const LF=['sku','qty','uid','name','jp','st','img','alt'];   // 同名重傳時會更新的欄位
 const sameLine=(a,b)=>LF.every(k=>JSON.stringify(a[k]??'')===JSON.stringify(b[k]??''));
-async function addFilesToBatch(files){
+async function addFilesToBatch(files,quiet){   // 完成回傳 true（取消回傳 undefined）
   const parsed=await readFiles(files);
   const same=parsed.filter(p=>S.files.includes(p.grp)), fresh=parsed.filter(p=>!S.files.includes(p.grp));
   // 同名入庫單：先算出新舊版差異給同仁確認
@@ -800,8 +821,10 @@ async function addFilesToBatch(files){
     tx.update(br,{indexed:false,files,lineCount:cur.length,qty:cur.reduce((a,l)=>a+l.qty,0),name:bd.name.replace(/ .*$/,' ')+files.join('、')});
   });
   if(delIds.length)await dropIndex(delIds).catch(e=>console.warn(e));
-  await ask(`✅ 完成\n`+(upd?`更新 ${upd} 行\n`:'')+(added?`新增 ${added} 行\n`:'')+(del?`移除 ${del} 行\n`:'')+(dup?`（${dup} 行在別張入庫單已經有，略過）\n`:'')+(!upd&&!added&&!del?'內容跟原本一樣，沒有變動。':''),'好',true);
+  if(!quiet)await ask(`✅ 完成\n`+(upd?`更新 ${upd} 行\n`:'')+(added?`新增 ${added} 行\n`:'')+(del?`移除 ${del} 行\n`:'')+(dup?`（${dup} 行在別張入庫單已經有，略過）\n`:'')+(!upd&&!added&&!del?'內容跟原本一樣，沒有變動。':''),'好',true);
+  if(quiet)toast('✅ 完成：'+([upd&&`更新 ${upd} 行`,added&&`新增 ${added} 行`,del&&`移除 ${del} 行`,dup&&`略過重複 ${dup} 行`].filter(Boolean).join('、')||'內容跟原本一樣'),4000);
   await openBatch(S.id);
+  return true;
 }
 async function dropIndex(ids){   // 移除的行：出庫索引裡屬於這批的也拿掉（避免舊籃提示、出庫查詢看到）
   const bid=S.id;
@@ -1185,21 +1208,57 @@ function renderReport(){
 }
 async function delEx(i){if(await ask('刪除這筆例外？','刪除')){db.collection(C.ex).doc(S.ex[i]._id).delete().catch(e=>toast(e.message))}}
 
-/* ================= 籃子標籤 ================= */
-$('#lblBtn').onclick=()=>{
-  const seen=new Set(), skip=$('#lblSkip').checked;let skipped=0;
-  const list=[];
+/* ================= 籃子標籤 =================
+   有開 EZFUN 本機服務（Jay 電腦 start-shipment-agent.bat，localhost:3096）時，跟黑貓託運單一樣直接送印：
+   本機服務把標籤做成 PDF，存到 Downloads\繪馬梨MMDD入\，用 SumatraPDF 印到 MPC5502_厚紙（noscale）。
+   連不到本機服務（手機、別台電腦、服務沒開）→ 用瀏覽器列印視窗（原本的方式） */
+const AGENT='http://localhost:3096';
+const LBL_PRINT={printer:'MPC5502_厚紙',settings:'noscale,portrait'};
+// 標籤版面：瀏覽器列印用上面 body.lbl #lblArea 的 CSS；本機送印由 agent/huimali-labels.js 產生（版面要同步）
+const lblCells=list=>list.map(l=>`<div class="lb"><span class="i">${esc(l.uid)}</span><span class="n">${esc(l.name||'')}</span></div>`).join('');
+async function agentUp(){
+  if(IS_IOS||/Android/i.test(navigator.userAgent)) return false;   // 手機連不到店裡電腦的 localhost
+  try{const c=new AbortController();setTimeout(()=>c.abort(),1500);return (await fetch(AGENT+'/agent/ping',{signal:c.signal})).ok}catch(e){return false}
+}
+async function lblList(){
+  const skip=$('#lblSkip').checked;
+  if(skip&&!S.prior){toast('讀取舊籃資料中…',30000);for(let i=0;i<30&&!S.prior;i++)await new Promise(r=>setTimeout(r,1000));$('#toast').style.display='none';
+    if(!S.prior){await ask('舊籃資料還沒讀完，無法判斷哪些客人已有舊籃。請稍後再按一次。','好',true);return null}}   // 沒等到會把已有舊籃的客人也印進去
+  const seen=new Set(),list=[];let skipped=0;
   [...S.lines].sort((a,b)=>(a.uid.slice(-1)-b.uid.slice(-1))||(+a.uid-+b.uid)).forEach(l=>{
     if(seen.has(l.uid))return;seen.add(l.uid);
-    if(skip&&S.prior&&S.prior[l.uid]){skipped++;return}
+    if(skip&&S.prior[l.uid]){skipped++;return}
     list.push(l)});
-  $('#lblArea').innerHTML=list.map(l=>`<div class="lb"><span class="i">${esc(l.uid)}</span><span class="n">${esc(l.name||'')}</span></div>`).join('');
-  toast(`共 ${list.length} 張標籤${skipped?`（${skipped} 位已有舊籃，不印）`:''}`,3000);
+  return {list,skipped};
+}
+function browserPrint(list){
+  $('#lblArea').innerHTML=lblCells(list);
   document.body.classList.add('lbl');
   // iPhone 的列印是非同步的，等列印視窗關掉（afterprint）才恢復畫面
   const done=()=>document.body.classList.remove('lbl');
   addEventListener('afterprint',done,{once:true});setTimeout(done,120000);
   setTimeout(()=>window.print(),300);
+}
+$('#lblBtn').onclick=async()=>{
+  const r=await lblList();if(!r)return;const {list,skipped}=r;
+  if(!list.length)return ask(`沒有要印的標籤${skipped?`（${skipped} 位都已有舊籃）`:''}`,'好',true);
+  const pages=Math.ceil(list.length/30), info=`共 ${list.length} 張標籤、${pages} 頁${skipped?`（${skipped} 位已有舊籃，不印）`:''}`;
+  if(!(await agentUp())){toast(info,3000);return browserPrint(list)}
+  const dir=`${V.name}${ymd()}入`, name=`${dir}-籃子標籤${S.files.length?'-'+fileTag():''}.pdf`;
+  if(!(await ask(`${info}\n\n印表機：${LBL_PRINT.printer}\n請先在「手送台」放好 ${pages} 張厚紙，再按送印。\n\n（檔案存到 Downloads\\${dir}\\）`,'送印'))){
+    if(await ask('改用瀏覽器列印視窗？','瀏覽器列印'))browserPrint(list);return}
+  toast('產生 PDF 並送印中…',20000);
+  try{
+    const res=await fetch(AGENT+'/agent/labels',{method:'POST',headers:{'Content-Type':'application/json','X-Agent':'1'},
+      body:JSON.stringify({path:dir+'/'+name,labels:list.map(l=>[String(l.uid),String(l.name||'')]),...LBL_PRINT})});
+    const j=await res.json().catch(()=>({}));$('#toast').style.display='none';
+    if(!res.ok||!j.ok)throw new Error(j.error||('本機服務回應 '+res.status+(res.status===404?'（server.js 還沒加入籃子標籤送印功能）':'')));
+    await ask(`✅ 已送印\n${info}\n檔案：${j.path||dir+'\\'+name}`,'好',true);
+  }catch(e){
+    $('#toast').style.display='none';
+    if(e instanceof TypeError)e.message='本機服務不接受這個網頁送印（server.js 還沒加入籃子標籤送印功能，或 Chrome 沒允許存取區域網路）';
+    if(await ask(`送印失敗：${e.message}\n\n改用瀏覽器列印視窗？`,'瀏覽器列印'))browserPrint(list);
+  }
 };
 
 /* ================= 例外 ================= */
