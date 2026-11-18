@@ -1484,22 +1484,27 @@ $('#delBatchBtn').onclick=async()=>{
 };
 /* 例外照片蓋編號 → 分享到 LINE */
 function stampPhoto(e,lab){return new Promise(res=>{const img=new Image();img.onload=()=>{
-  const c=document.createElement('canvas');c.width=img.width;c.height=img.height;const x=c.getContext('2d');x.drawImage(img,0,0);
-  const fs=Math.max(28,Math.round(img.width/14)),pad=fs*.4;x.font=`bold ${fs}px sans-serif`;
+  const k=Math.min(1,1600/Math.max(img.width,img.height)),W=Math.round(img.width*k),H=Math.round(img.height*k);
+  const c=document.createElement('canvas');c.width=W;c.height=H;const x=c.getContext('2d');x.drawImage(img,0,0,W,H);
+  const fs=Math.max(28,Math.round(W/14)),pad=fs*.4;x.font=`bold ${fs}px sans-serif`;
   const sub=`${e.box}箱｜${(e.note||'').slice(0,24)}`;
   x.fillStyle='#dc2626';x.fillRect(0,0,x.measureText(lab).width+pad*2,fs+pad*2);x.fillStyle='#fff';x.textBaseline='top';x.fillText(lab,pad,pad);
-  const fs2=Math.round(fs*.55);x.font=`${fs2}px sans-serif`;const w2=Math.min(img.width,x.measureText(sub).width+pad*2);
+  const fs2=Math.round(fs*.55);x.font=`${fs2}px sans-serif`;const w2=Math.min(W,x.measureText(sub).width+pad*2);
   x.fillStyle='rgba(0,0,0,.6)';x.fillRect(0,fs+pad*2,w2,fs2+pad);x.fillStyle='#fff';x.fillText(sub,pad,fs+pad*2+pad/2);
   c.toBlob(b=>res(new File([b],`${lab.replace(/\s+/g,'')}.jpg`,{type:'image/jpeg'})),'image/jpeg',.85)};img.onerror=()=>res(null);img.src=e.photo})}
 // 照片先在背景蓋好編號：按鈕按下去要「馬上」呼叫 share，等太久瀏覽器會判定不是使用者操作 → Permission denied
-let REPF={key:null,p:null,files:null};
+let REPF={key:null,p:null,files:null},SHQ=null;
 function prepRep(){
   const key=REP.map(r=>r.lab+'|'+(r.e._id||'')+'|'+(r.e.note||'')+'|'+(r.e.photo||'').length).join('\n');
-  if(REPF.key!==key){const R={key,files:null};R.p=Promise.all(REP.map(r=>stampPhoto(r.e,r.lab))).then(a=>R.files=a.filter(Boolean));REPF=R}
+  if(REPF.key!==key){const R={key,files:null};R.p=Promise.all(REP.map(r=>stampPhoto(r.e,r.lab))).then(a=>R.files=a.filter(Boolean));REPF=R;
+    if(SHQ){SHQ=null;$('#shareRep').textContent='文字＋照片分享（LINE）'}}
   return REPF}
 function dlFiles(files,why){
   files.forEach((f,i)=>setTimeout(()=>{const a=document.createElement('a');a.href=URL.createObjectURL(f);a.download=f.name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),3000)},i*250));
   toast(`${why}：已下載 ${files.length} 張照片、文字已複製`,4500)}
+// Chrome 一次最多分享 10 個檔案（超過會回 Permission denied）→ 每 10 張一批，每批要再按一次按鈕
+const SHARE_MAX=10,SHARE_LBL='文字＋照片分享（LINE）';
+function shareLbl(){const n=SHQ&&SHQ.i<SHQ.groups.length;$('#shareRep').textContent=n?`繼續分享照片（第 ${SHQ.i+1}/${SHQ.groups.length} 批）`:SHARE_LBL}
 $('#shareRep').onclick=async()=>{
   const text=$('#repText').textContent;
   navigator.clipboard.writeText(text).catch(()=>{});
@@ -1507,15 +1512,18 @@ $('#shareRep').onclick=async()=>{
   if(!ready)toast('照片處理中…',3000);
   const files=R.files||await R.p;
   if(!files.length){toast('沒有照片，文字已複製，可直接貼到 LINE',3000);return}
-  if(navigator.canShare&&navigator.canShare({files})){
-    try{await navigator.share({files,text});toast('文字也已複製，LINE 沒帶到文字的話長按貼上',3500)}
-    catch(e){
-      if(e.name==='AbortError')return;
-      if(e.name==='NotAllowedError'&&!ready){toast('照片已準備好，請再按一次「文字＋照片分享」',4000);return}
-      dlFiles(files,'無法直接分享（'+e.message+'）')}
-    return}
-  // 電腦/不支援分享：下載照片
-  dlFiles(files,'這台裝置不支援直接分享')};
+  if(!(navigator.canShare&&navigator.canShare({files:files.slice(0,1)}))){dlFiles(files,'這台裝置不支援直接分享');return}
+  if(!SHQ||SHQ.key!==R.key||SHQ.i>=SHQ.groups.length)SHQ={key:R.key,i:0,groups:chunk(files,SHARE_MAX)};
+  const Q=SHQ,g=Q.groups[Q.i],n=Q.groups.length;
+  try{
+    await navigator.share(Q.i===0?{files:g,text}:{files:g});
+    Q.i++;shareLbl();
+    toast(Q.i<n?`第 ${Q.i}/${n} 批已分享，請再按綠色按鈕分享下一批`:(n>1?`${n} 批照片都分享完了；`:'')+'文字也已複製，LINE 沒帶到文字的話長按貼上',4500)}
+  catch(e){
+    if(e.name==='AbortError')return;
+    if(e.name==='NotAllowedError'&&!ready){toast('照片已準備好，請再按一次分享',4000);return}
+    SHQ=null;shareLbl();dlFiles(files,'無法直接分享（'+e.message+'）')}
+};
 $('#copyRep').onclick=async()=>{try{await navigator.clipboard.writeText($('#repText').textContent);toast('已複製，可貼到 LINE')}catch(e){toast('複製失敗，請長按文字手動複製')}};
 $('#showClosed').onclick=()=>{showClosed=!showClosed;$('#showClosed').textContent=showClosed?'隱藏已結案':'顯示已結案';showList()};
 $('#backBtn').onclick=()=>showList();
