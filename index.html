@@ -1203,7 +1203,7 @@ function renderReport(){
   const ot=S.ex.filter(e=>catOf(e.type)==='ot');
   sec('數量不符／其他',ot.map((e,i)=>`${i+1}. ${e.type}｜${e.box}箱｜${e.note||'（無說明）'}${ph('其他 '+(i+1),e)}`));
   if(!miss.length&&!S.ex.length&&!pend.length) L.push('','全部到齊，無異常。');
-  $('#repText').textContent=L.join('\n');
+  $('#repText').textContent=L.join('\n');prepRep();
   renderSG();renderFiles();
 }
 async function delEx(i){if(await ask('刪除這筆例外？','刪除')){db.collection(C.ex).doc(S.ex[i]._id).delete().catch(e=>toast(e.message))}}
@@ -1491,18 +1491,31 @@ function stampPhoto(e,lab){return new Promise(res=>{const img=new Image();img.on
   const fs2=Math.round(fs*.55);x.font=`${fs2}px sans-serif`;const w2=Math.min(img.width,x.measureText(sub).width+pad*2);
   x.fillStyle='rgba(0,0,0,.6)';x.fillRect(0,fs+pad*2,w2,fs2+pad);x.fillStyle='#fff';x.fillText(sub,pad,fs+pad*2+pad/2);
   c.toBlob(b=>res(new File([b],`${lab.replace(/\s+/g,'')}.jpg`,{type:'image/jpeg'})),'image/jpeg',.85)};img.onerror=()=>res(null);img.src=e.photo})}
+// 照片先在背景蓋好編號：按鈕按下去要「馬上」呼叫 share，等太久瀏覽器會判定不是使用者操作 → Permission denied
+let REPF={key:null,p:null,files:null};
+function prepRep(){
+  const key=REP.map(r=>r.lab+'|'+(r.e._id||'')+'|'+(r.e.note||'')+'|'+(r.e.photo||'').length).join('\n');
+  if(REPF.key!==key){const R={key,files:null};R.p=Promise.all(REP.map(r=>stampPhoto(r.e,r.lab))).then(a=>R.files=a.filter(Boolean));REPF=R}
+  return REPF}
+function dlFiles(files,why){
+  files.forEach((f,i)=>setTimeout(()=>{const a=document.createElement('a');a.href=URL.createObjectURL(f);a.download=f.name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),3000)},i*250));
+  toast(`${why}：已下載 ${files.length} 張照片、文字已複製`,4500)}
 $('#shareRep').onclick=async()=>{
   const text=$('#repText').textContent;
-  try{await navigator.clipboard.writeText(text)}catch(e){}
-  const files=(await Promise.all(REP.map(r=>stampPhoto(r.e,r.lab)))).filter(Boolean);
+  navigator.clipboard.writeText(text).catch(()=>{});
+  const R=prepRep(),ready=!!R.files;
+  if(!ready)toast('照片處理中…',3000);
+  const files=R.files||await R.p;
   if(!files.length){toast('沒有照片，文字已複製，可直接貼到 LINE',3000);return}
   if(navigator.canShare&&navigator.canShare({files})){
     try{await navigator.share({files,text});toast('文字也已複製，LINE 沒帶到文字的話長按貼上',3500)}
-    catch(e){if(e.name!=='AbortError')toast('分享失敗：'+e.message,4000)}
+    catch(e){
+      if(e.name==='AbortError')return;
+      if(e.name==='NotAllowedError'&&!ready){toast('照片已準備好，請再按一次「文字＋照片分享」',4000);return}
+      dlFiles(files,'無法直接分享（'+e.message+'）')}
     return}
   // 電腦/不支援分享：下載照片
-  files.forEach(f=>{const a=document.createElement('a');a.href=URL.createObjectURL(f);a.download=f.name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),3000)});
-  toast(`這台裝置不支援直接分享：已下載 ${files.length} 張照片、文字已複製`,4000)};
+  dlFiles(files,'這台裝置不支援直接分享')};
 $('#copyRep').onclick=async()=>{try{await navigator.clipboard.writeText($('#repText').textContent);toast('已複製，可貼到 LINE')}catch(e){toast('複製失敗，請長按文字手動複製')}};
 $('#showClosed').onclick=()=>{showClosed=!showClosed;$('#showClosed').textContent=showClosed?'隱藏已結案':'顯示已結案';showList()};
 $('#backBtn').onclick=()=>showList();
