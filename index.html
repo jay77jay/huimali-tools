@@ -1211,7 +1211,8 @@ async function delEx(i){if(await ask('刪除這筆例外？','刪除')){db.colle
 /* ================= 籃子標籤 =================
    有開 EZFUN 本機服務（Jay 電腦 start-shipment-agent.bat，localhost:3096）時，跟黑貓託運單一樣直接送印：
    本機服務把標籤做成 PDF，存到 Downloads\繪馬梨MMDD入\，用 SumatraPDF 印到 MPC5502_厚紙（noscale）。
-   連不到本機服務（手機、別台電腦、服務沒開）→ 用瀏覽器列印視窗（原本的方式） */
+   連不到本機服務（手機、別台電腦）→ 透過 Firestore 請 Jay 電腦的 b2b-worker 送印（remotePrint）；
+   worker 也沒開 → 用瀏覽器列印視窗（原本的方式） */
 const AGENT='http://localhost:3096';
 const LBL_PRINT={printer:'MPC5502_厚紙',settings:'noscale,portrait'};
 // 標籤版面：瀏覽器列印用上面 body.lbl #lblArea 的 CSS；本機送印由 agent/huimali-labels.js 產生（版面要同步）
@@ -1239,12 +1240,49 @@ function browserPrint(list){
   addEventListener('afterprint',done,{once:true});setTimeout(done,120000);
   setTimeout(()=>window.print(),300);
 }
+/* 2026-11-18：手機／別台電腦 → 寫一筆工作到 Firestore（xintea_b2b_jobs，type huimaliLabels），
+   Jay 電腦上的 b2b-worker.js 收到後轉給本機 shipment 伺服器 /agent/labels 產生 PDF 並送印（跟電腦直接送印同一套） */
+const JOBS='xintea_b2b_jobs';
+async function workerUp(){
+  try{const d=await db.collection(JOBS).doc('_worker').get();const at=d.exists&&Date.parse(d.data().at);return !!at&&Date.now()-at<3*60e3}catch(e){return false}
+}
+function waitJob(ref,ms){return new Promise(res=>{let un=()=>{};
+  const t=setTimeout(()=>{un();res(null)},ms);
+  un=ref.onSnapshot(s=>{const x=s.data();if(x&&['done','error','cancelled'].includes(x.status)){clearTimeout(t);un();res(x)}},()=>{})})}
+async function remotePrint(list,info,path){
+  const u=auth.currentUser;
+  toast('已送出，等店裡電腦送印…',600000);
+  let ref,d;
+  try{
+    ref=await db.collection(JOBS).add({type:'huimaliLabels',status:'queued',createdAt:new Date().toISOString(),by:u.displayName||u.email,byEmail:u.email,
+      path,labels:list.map(l=>({u:String(l.uid),n:String(l.name||'')})),...LBL_PRINT});
+    while(!(d=await waitJob(ref,120000))){
+      $('#toast').style.display='none';
+      if(!(await ask('2 分鐘了，店裡電腦還沒處理完（可能正在跑心茶的工作，送印會排在後面）。','繼續等'))){
+        await ref.update({cancelRequested:true});
+        d=await waitJob(ref,30000);   // 還沒開始的會直接取消；已經在印的取消不了
+        if(d&&d.status==='done')break;
+        return ask(d&&d.status==='cancelled'?'已取消這筆送印。':'已要求取消；如果電腦已經開始印，可能還是會印出來。','好',true);
+      }
+      toast('繼續等店裡電腦送印…',600000);
+    }
+  }catch(e){d={status:'error',error:e.message}}
+  $('#toast').style.display='none';
+  if(d.status==='done')return ask(`✅ 已送印\n${info}\n檔案：${(d.result&&d.result.path)||path}`,'好',true);
+  if(await ask(`送印失敗：${d.error||d.status}\n\n改用瀏覽器列印視窗？`,'瀏覽器列印'))browserPrint(list);
+}
 $('#lblBtn').onclick=async()=>{
   const r=await lblList();if(!r)return;const {list,skipped}=r;
   if(!list.length)return ask(`沒有要印的標籤${skipped?`（${skipped} 位都已有舊籃）`:''}`,'好',true);
   const pages=Math.ceil(list.length/30), info=`共 ${list.length} 張標籤、${pages} 頁${skipped?`（${skipped} 位已有舊籃，不印）`:''}`;
-  if(!(await agentUp())){toast(info,3000);return browserPrint(list)}
   const dir=`${V.name}${ymd()}入`, name=`${dir}-籃子標籤${S.files.length?'-'+fileTag():''}.pdf`;
+  if(!(await agentUp())){
+    toast('檢查店裡電腦…',5000);const up=await workerUp();$('#toast').style.display='none';
+    if(!up){toast(info+'（店裡電腦的送印程式沒開，改用瀏覽器列印）',4000);return browserPrint(list)}
+    if(!(await ask(`${info}\n\n由店裡電腦送印到：${LBL_PRINT.printer}\n⚠ 請先確認「手送台」已放好 ${pages} 張厚紙，人不在印表機旁先別按。\n\n（檔案存到 Downloads\\${dir}\\）`,'送印'))){
+      if(await ask('改用瀏覽器列印視窗？','瀏覽器列印'))browserPrint(list);return}
+    return remotePrint(list,info,dir+'/'+name);
+  }
   if(!(await ask(`${info}\n\n印表機：${LBL_PRINT.printer}\n請先在「手送台」放好 ${pages} 張厚紙，再按送印。\n\n（檔案存到 Downloads\\${dir}\\）`,'送印'))){
     if(await ask('改用瀏覽器列印視窗？','瀏覽器列印'))browserPrint(list);return}
   toast('產生 PDF 並送印中…',20000);
