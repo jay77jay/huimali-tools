@@ -229,7 +229,7 @@
       <h3 style="margin:0 0 6px">回報文字</h3>
       <pre class="rep" id="repText"></pre>
       <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="copyRep">複製回報文字</button><button class="btn" id="shareRep" style="background:#06c755">文字＋照片分享（LINE）</button></div>
-      <p class="muted" style="margin:6px 0 0">分享時照片左上角會蓋上分類＋編號（例：待確認 2），對應文字裡該分類的「2.」…；文字同時複製好，LINE 若只收到照片，在對話框長按貼上即可。</p>
+      <p class="muted" style="margin:6px 0 0">分享時照片會合成拼圖（每張最多 12 格），每格左上角蓋上分類＋編號（例：待確認 2），對應文字裡該分類的「2.」…；文字同時複製好，LINE 若只收到照片，在對話框長按貼上即可。</p>
     </div>
     <div class="card">
       <button class="btn gray" onclick="$('#addFile').click()">＋ 加入入庫單 / 補資料</button>
@@ -1482,21 +1482,37 @@ $('#delBatchBtn').onclick=async()=>{
   }catch(e){toast('刪除失敗：'+e.message,5000)}
   showList();
 };
-/* 例外照片蓋編號 → 分享到 LINE */
-function stampPhoto(e,lab){return new Promise(res=>{const img=new Image();img.onload=()=>{
-  const k=Math.min(1,1600/Math.max(img.width,img.height)),W=Math.round(img.width*k),H=Math.round(img.height*k);
-  const c=document.createElement('canvas');c.width=W;c.height=H;const x=c.getContext('2d');x.drawImage(img,0,0,W,H);
-  const fs=Math.max(28,Math.round(W/14)),pad=fs*.4;x.font=`bold ${fs}px sans-serif`;
-  const sub=`${e.box}箱｜${(e.note||'').slice(0,24)}`;
-  x.fillStyle='#dc2626';x.fillRect(0,0,x.measureText(lab).width+pad*2,fs+pad*2);x.fillStyle='#fff';x.textBaseline='top';x.fillText(lab,pad,pad);
-  const fs2=Math.round(fs*.55);x.font=`${fs2}px sans-serif`;const w2=Math.min(W,x.measureText(sub).width+pad*2);
-  x.fillStyle='rgba(0,0,0,.6)';x.fillRect(0,fs+pad*2,w2,fs2+pad);x.fillStyle='#fff';x.fillText(sub,pad,fs+pad*2+pad/2);
-  c.toBlob(b=>res(new File([b],`${lab.replace(/\s+/g,'')}.jpg`,{type:'image/jpeg'})),'image/jpeg',.85)};img.onerror=()=>res(null);img.src=e.photo})}
+/* 例外照片合成拼圖（每張最多 12 格，每格左上角蓋分類＋編號）→ 分享到 LINE */
+const loadUrlImg=src=>new Promise(res=>{const i=new Image();i.onload=()=>res(i);i.onerror=()=>res(null);i.src=src});
+async function makeSheets(rep){
+  const imgs=await Promise.all(rep.map(r=>loadUrlImg(r.e.photo)));
+  const ok=rep.map((r,i)=>({...r,img:imgs[i]})).filter(r=>r.img);
+  const PER=12,CELL=600,GAP=8,HEAD=80,pages=chunk(ok,PER),out=[];
+  pages.forEach((pg,pi)=>{
+    const cols=Math.min(3,pg.length),rows=Math.ceil(pg.length/cols);
+    const c=document.createElement('canvas');c.width=cols*CELL+(cols+1)*GAP;c.height=HEAD+rows*CELL+(rows+1)*GAP;
+    const x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);x.textBaseline='top';
+    x.fillStyle='#111';x.font='bold 44px sans-serif';
+    x.fillText(`${V.name}入庫回報 照片`+(pages.length>1?` ${pi+1}/${pages.length}`:''),GAP*2,(HEAD-44)/2);
+    pg.forEach(({img,lab,e},i)=>{
+      const cx=GAP+(i%cols)*(CELL+GAP),cy=HEAD+GAP+Math.floor(i/cols)*(CELL+GAP);
+      x.fillStyle='#222';x.fillRect(cx,cy,CELL,CELL);
+      const k=Math.min(CELL/img.width,CELL/img.height),w=img.width*k,h=img.height*k;
+      x.drawImage(img,cx+(CELL-w)/2,cy+(CELL-h)/2,w,h);
+      const fs=46,pad=12;x.font=`bold ${fs}px sans-serif`;
+      x.fillStyle='#dc2626';x.fillRect(cx,cy,x.measureText(lab).width+pad*2,fs+pad*2);x.fillStyle='#fff';x.fillText(lab,cx+pad,cy+pad);
+      const sub=`${e.box}箱｜${(e.note||'').slice(0,18)}`,fs2=26;x.font=`${fs2}px sans-serif`;
+      x.fillStyle='rgba(0,0,0,.65)';x.fillRect(cx,cy+CELL-fs2-pad*2,CELL,fs2+pad*2);x.fillStyle='#fff';x.fillText(sub,cx+pad,cy+CELL-fs2-pad,CELL-pad*2);
+    });
+    out.push(new Promise(res=>c.toBlob(b=>res(b&&new File([b],`入庫回報照片${pages.length>1?'-'+(pi+1):''}.jpg`,{type:'image/jpeg'})),'image/jpeg',.85)));
+  });
+  return (await Promise.all(out)).filter(Boolean);
+}
 // 照片先在背景蓋好編號：按鈕按下去要「馬上」呼叫 share，等太久瀏覽器會判定不是使用者操作 → Permission denied
 let REPF={key:null,p:null,files:null},SHQ=null;
 function prepRep(){
   const key=REP.map(r=>r.lab+'|'+(r.e._id||'')+'|'+(r.e.note||'')+'|'+(r.e.photo||'').length).join('\n');
-  if(REPF.key!==key){const R={key,files:null};R.p=Promise.all(REP.map(r=>stampPhoto(r.e,r.lab))).then(a=>R.files=a.filter(Boolean));REPF=R;
+  if(REPF.key!==key){const R={key,files:null};R.p=makeSheets(REP).then(a=>R.files=a);REPF=R;
     if(SHQ){SHQ=null;$('#shareRep').textContent='文字＋照片分享（LINE）'}}
   return REPF}
 function dlFiles(files,why){
