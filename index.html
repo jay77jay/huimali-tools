@@ -471,7 +471,7 @@ $('#lkGo').onclick=async()=>{
     const f=await readSheetLink(url,name);
     parseWorkbook(f.wb,f.name);   // 先檢查欄位，有錯直接顯示在視窗裡
     close('#mLink');
-    if(linkMode==='new'){toast('建立批次中…',10000);const id=await createBatch([f]);await openBatch(id)}
+    if(linkMode==='new'){toast('建立批次中…',10000);const id=await createBatch([f]);if(id)await openBatch(id)}
     else await addFilesToBatch([f]);
   }catch(e){$('#lkMsg').textContent='⚠️ '+e.message}
 };
@@ -749,7 +749,7 @@ async function bxGo(){
     }
     close('#mBox');
     let ok;
-    if(BX.mode==='new'){toast('建立批次中…',10000);const id=await createBatch(got);ok=true;await openBatch(id)}
+    if(BX.mode==='new'){toast('建立批次中…',10000);const id=await createBatch(got);ok=!!id;if(id)await openBatch(id)}
     else ok=await addFilesToBatch(got,true);
     if(ok){const m=await archiveDriveFiles(files);if(m)await ask(m.trim(),'好',true)}
   }catch(e){
@@ -771,13 +771,34 @@ async function readBook(file){
   return XLSX.read(buf,{type:'array'});
 }
 /* ================= 批次：建立 / 清單 / 開啟 ================= */
-async function createBatch(files){
+/* 廠商重新確認檔：找之前建過、含同箱號的批次（通常已結案），回傳裡面對得到 id 的行 */
+async function priorHits(ids,boxes){
+  const qs=await db.collection(C.batches).where('v','==',VID).get(), out=[];
+  for(const d of qs.docs){const b=d.data();
+    if(!(b.files||[]).some(f=>boxesIn(f).some(x=>boxes.includes(x))))continue;
+    const [ld,sd]=await Promise.all([db.collection(C.lines).doc(d.id).get(),db.collection(C.state).doc(d.id).get()]);
+    const hit=((ld.exists&&ld.data().lines)||[]).filter(l=>ids.has(l.id));
+    if(hit.length)out.push({bid:d.id,name:b.name,closed:!!b.closed,hit,rcv:(sd.exists&&sd.data().rcv)||{}})}
+  return out;
+}
+async function createBatch(files){   // 取消回傳 null
   const parsed=await readFiles(files);
   const lines=[],seen=new Set();let dup=0;
   const vnOf=new Map(parsed.flatMap(p=>p.lines).filter(l=>l.vn).map(l=>[l.id,l.vn]));
   const ord=[...parsed.filter(p=>!p.recheck),...parsed.filter(p=>p.recheck)];   // 原始入庫單優先，箱號才會是原本的
-  for(const p of ord) for(const l of p.lines){if(seen.has(l.id)){if(!p.recheck)dup++;continue}seen.add(l.id);lines.push(vnOf.has(l.id)?{...l,vn:vnOf.get(l.id)}:l)}
-  const names=[...new Set(ord.filter(p=>p.lines.some(l=>lines.find(x=>x.id===l.id&&x.box===p.grp))).map(p=>p.grp))];
+  // 原批次已結案 → 用重新確認檔開新批次：箱號沿用原批次，原批次那幾行也補上廠商備註；原批次已配籃的件不再放進來
+  const rIds=new Set(ord.filter(p=>p.recheck).flatMap(p=>p.lines.map(l=>l.id)));
+  const prior=rIds.size?await priorHits(rIds,ord.filter(p=>p.recheck).flatMap(p=>boxesIn(p.grp))):[];
+  const open=prior.filter(x=>!x.closed);
+  if(open.length&&!(await ask(`這份重新確認檔的商品在還沒結案的批次裡：\n${open.map(x=>`・${x.name}（${x.hit.length} 行）`).join('\n')}\n\n建議打開那個批次，用「加入入庫單 / 補資料」補備註。\n仍要另外建新批次嗎？`,'仍要建新批次')))return null;
+  const origOf=new Map(), gotIn=new Map();
+  for(const x of prior)for(const l of x.hit){if(!origOf.has(l.id))origOf.set(l.id,l);if((x.rcv[l.id]||0)>0)gotIn.set(l.id,x.name)}
+  for(const p of ord) for(const l of p.lines){if(seen.has(l.id)){if(!p.recheck)dup++;continue}seen.add(l.id);
+    if(p.recheck&&gotIn.has(l.id))continue;   // 之前的批次已經配進籃子
+    const o=p.recheck&&origOf.get(l.id), base=o?{...l,box:o.box}:l;
+    lines.push(vnOf.has(l.id)?{...base,vn:vnOf.get(l.id)}:base)}
+  if(!lines.length){await ask(`這份重新確認檔的 ${gotIn.size} 件，在之前的批次都已經配籃了，不需要建新批次。`,'好',true);return null}
+  const names=[...new Set([...ord.filter(p=>!p.recheck).map(p=>p.grp),...lines.map(l=>l.box)])];
   const d=new Date(), name=`${d.getMonth()+1}/${d.getDate()} `+names.join('、');
   const ref=db.collection(C.batches).doc();
   const b=db.batch();
@@ -786,7 +807,13 @@ async function createBatch(files){
   b.set(db.collection(C.lines).doc(ref.id),{lines});
   b.set(db.collection(C.state).doc(ref.id),{rcv:{}});
   await b.commit();
-  toast(`已建立批次：${lines.length} 行${dup?`（略過重複 ${dup}）`:''}`,3500);
+  // 已結案的原批次：那幾行也記上廠商備註（原名稱不變），之後查紀錄看得到
+  for(const x of prior.filter(x=>x.closed)){const want=new Map(x.hit.filter(l=>vnOf.has(l.id)&&l.vn!==vnOf.get(l.id)).map(l=>[l.id,vnOf.get(l.id)]));if(!want.size)continue;
+    try{await db.runTransaction(async tx=>{const lr=db.collection(C.lines).doc(x.bid);const cur=(await tx.get(lr)).data().lines;tx.set(lr,{lines:cur.map(l=>want.has(l.id)?{...l,vn:want.get(l.id)}:l)})})}catch(e){console.warn(e)}}
+  const fromClosed=lines.filter(l=>origOf.has(l.id)).length;
+  if(prior.length||gotIn.size)await ask(`✅ 已建立批次：${lines.length} 行`+(fromClosed?`\n・${fromClosed} 行對到之前的批次（${prior.map(x=>x.name).join('、')}），箱號沿用原本的，原批次也補上廠商備註`:'')+
+    (gotIn.size?`\n・${gotIn.size} 件之前的批次已經配籃，沒有放進來：\n`+[...gotIn].map(([id,n])=>`　${(origOf.get(id)||{}).uid||''} ${((origOf.get(id)||{}).sku||'').slice(0,22)}（${n}）`).join('\n'):''),'好',true);
+  else toast(`已建立批次：${lines.length} 行${dup?`（略過重複 ${dup}）`:''}`,3500);
   return ref.id;
 }
 const LF=['sku','qty','uid','name','jp','st','img','alt'];   // 同名重傳時會更新的欄位
@@ -1561,7 +1588,7 @@ $('#copyRep').onclick=async()=>{try{await navigator.clipboard.writeText($('#repT
 $('#showClosed').onclick=()=>{showClosed=!showClosed;$('#showClosed').textContent=showClosed?'隱藏已結案':'顯示已結案';showList()};
 $('#backBtn').onclick=()=>showList();
 $('#upFile').onchange=async e=>{const fs=[...e.target.files];e.target.value='';if(!fs.length)return;
-  toast('上傳中…',10000);try{const id=await createBatch(fs);await openBatch(id)}catch(err){toast('上傳失敗：'+err.message,5000)}};
+  toast('上傳中…',10000);try{const id=await createBatch(fs);if(id)await openBatch(id)}catch(err){toast('上傳失敗：'+err.message,5000)}};
 $('#addFile').onchange=async e=>{const fs=[...e.target.files];e.target.value='';if(!fs.length)return;
   try{await addFilesToBatch(fs)}catch(err){toast('加入失敗：'+err.message,5000)}};
 
