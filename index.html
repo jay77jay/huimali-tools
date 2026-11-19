@@ -844,7 +844,7 @@ async function addFilesToBatch(files,quiet){   // 完成回傳 true（取消回�
       (x.moved.length?`\n⚠️ 收件人改了、衣服要換籃：\n`+x.moved.join('\n'):'')).join('\n\n');
     if(!(await ask(`入庫單名稱相同，會用新版內容更新，已配籃進度保留。\n\n${msg}`+(fresh.length?`\n\n另外 ${fresh.map(p=>p.grp).join('、')} 是新的，會追加進來。`:''),'更新'))) return;
   }
-  let added=0,dup=0,upd=0,del=0,note=0;const delIds=[];
+  let added=0,dup=0,upd=0,del=0,note=0,fin=null;const delIds=[];
   await db.runTransaction(async tx=>{
     const lr=db.collection(C.lines).doc(S.id), br=db.collection(C.batches).doc(S.id);
     let cur=(await tx.get(lr)).data().lines; const bd=(await tx.get(br)).data(), files=[...bd.files];
@@ -861,13 +861,16 @@ async function addFilesToBatch(files,quiet){   // 完成回傳 true（取消回�
       const old=byId.get(l.id);
       if(old){if(old.box!==l.box&&!p.recheck)dup++;continue}   // 別張入庫單已經有同一個 id
       byId.set(l.id,l);cur.push(l);added++}}
-    tx.set(lr,{lines:cur});
+    tx.set(lr,{lines:cur});fin=cur;
     tx.update(br,{indexed:false,files,lineCount:cur.length,qty:cur.reduce((a,l)=>a+l.qty,0),name:bd.name.replace(/ .*$/,' ')+files.join('、')});
   });
+  // 廠商備註對到幾筆例外（例外清單還在 S 裡，用新的行先算好）
+  let refN=0;if(rchk.length&&fin){const keep=S.lines;S.lines=fin;try{refN=vendorRefs().size}finally{S.lines=keep}}
   if(delIds.length)await dropIndex(delIds).catch(e=>console.warn(e));
   if(!quiet)await ask(`✅ 完成\n`+(note?`加上廠商備註 ${note} 行\n`:'')+(upd?`更新 ${upd} 行\n`:'')+(added?`新增 ${added} 行\n`:'')+(del?`移除 ${del} 行\n`:'')+(dup?`（${dup} 行在別張入庫單已經有，略過）\n`:'')+(!note&&!upd&&!added&&!del?'內容跟原本一樣，沒有變動。':''),'好',true);
   if(quiet)toast('✅ 完成：'+([note&&`廠商備註 ${note} 行`,upd&&`更新 ${upd} 行`,added&&`新增 ${added} 行`,del&&`移除 ${del} 行`,dup&&`略過重複 ${dup} 行`].filter(Boolean).join('、')||'內容跟原本一樣'),4000);
   await openBatch(S.id);
+  if(refN){const n=refN;await ask(`廠商備註對到 ${n} 筆例外（例：未在入庫單1）。\n到「回報」頁，例外下面會出現綠色的「廠商確認是這件」，按「配進籃」就完成。`,'好',true)}
   return true;
 }
 async function dropIndex(ids){   // 移除的行：出庫索引裡屬於這批的也拿掉（避免舊籃提示、出庫查詢看到）
@@ -1219,17 +1222,56 @@ function renderBaskets(){
 // 舊資料的類型 → 新分類
 const catOf=t=>t===T_NA||t==='入庫單上沒有（多出）'?'na':t===T_PD||t==='名稱/標籤不符'?'pd':'ot';
 let REP=[];   // 回報用：有照片的項目（分享時蓋編號）
+/* 例外編號（回報文字、照片拼圖、廠商回覆都用這組編號）：
+   未在入庫單 N／待確認 N／其他 N。廠商確認過、已配籃的待確認件仍保留編號，避免後面的編號往前移 */
+function exNums(){
+  const pend=S.lines.filter(l=>S.lst&&S.lst[l.id]&&(rem(l)>0||S.lst[l.id].vc));
+  return {na:S.ex.filter(e=>catOf(e.type)==='na'),
+    pd:[...pend.map(l=>({e:S.lst[l.id],l})),...S.ex.filter(e=>catOf(e.type)==='pd').map(e=>({e}))],
+    ot:S.ex.filter(e=>catOf(e.type)==='ot')};
+}
+/* 廠商重新確認的備註（例「未在入庫單1, 顏色正確」）→ 找出指的是哪一筆例外，對應到備註所在的那一行 */
+const VREF={'未在入庫單':'na','待確認':'pd','其他':'ot'};
+function vendorRefs(){   // 回傳 Map：例外文件 _id → 入庫單那一行
+  const N=exNums(), m=new Map();
+  for(const l of S.lines){if(!l.vn)continue;
+    for(const [,k,n] of l.vn.normalize('NFKC').matchAll(/(未在入庫單|待確認|其他)\s*[#＃]?\s*(\d+)/g)){
+      const it=N[VREF[k]][+n-1], e=it&&(it.e||it);if(e&&e._id&&!m.has(e._id))m.set(e._id,l)}}
+  return m;
+}
+const vcText=(e,l)=>`廠商確認：籃 ${l.uid} ${l.name}｜${dn(l)}`+(e.vc||rem(l)<=0?'（已配籃）':'（待配籃）');
+function vcBox(e,l){   // 例外列裡的綠色區塊：廠商說這件是哪一行＋一鍵配籃
+  if(!l)return '';
+  const can=!e.vc&&rem(l)>0&&!S.closed;
+  return `<div style="flex-basis:100%;background:#dcfce7;border-radius:8px;padding:8px;margin-top:6px;display:flex;gap:8px;align-items:center">
+    <img src="${esc(l.img)}" style="width:48px;height:48px;object-fit:cover;border-radius:6px" onerror="this.style.visibility='hidden'">
+    <div class="tx" style="flex:1">✅ <b>廠商確認是這件</b>：<span class="badge" style="background:${zc(l.uid)}">${esc(l.uid)}</span>${esc(l.name)}<br>${esc(dn(l))}</div>
+    ${can?`<button class="btn" onclick="vcAssign('${esc(e._id)}','${esc(l.id)}')">配進籃 ${esc(l.uid)}</button>`:`<b style="white-space:nowrap">${e.vc||rem(l)<=0?'已配籃 ✓':S.closed?'批次已結案':''}</b>`}</div>`;
+}
+async function vcAssign(eid,lid){   // 廠商確認的例外件 → 直接配進那一行的籃子（清點鎖定時也可以，這是刻意的動作）
+  const l=S.lines.find(x=>x.id===lid);if(!l||rem(l)<=0)return toast('這件已經配完了');
+  if(!(await ask(`把這件放進籃 ${l.uid}（${l.name}）？\n${dn(l)}`,'配籃')))return;
+  S.rcv[l.id]=(S.rcv[l.id]||0)+1;
+  const b=db.batch();
+  b.update(db.collection(C.state).doc(S.id),new FP('rcv',l.id),FV.increment(1));
+  b.update(db.collection(C.batches).doc(S.id),{done:FV.increment(1)});
+  b.update(db.collection(C.ex).doc(eid),{vc:{lid:l.id,by:me(),at:Date.now()}});
+  await b.commit().catch(e=>toast('同步失敗：'+e.message,4000));
+  toast(`✅ 已配進籃 ${l.uid}`,2500);render(false);
+}
 function renderReport(){
   if(!S) return;
+  const N=exNums(), VR=vendorRefs(), numOf=e=>{const c=catOf(e.type),k=N[c].findIndex(x=>(x.e||x)===e);return k<0?'':`${{na:'未在入庫單',pd:'待確認',ot:'其他'}[c]} ${k+1}`};
   const exRow=(e,i)=>`<div class="it" style="flex-wrap:wrap">
-    <div class="tx"><b>${esc(e.type)}</b> ・ ${esc(e.box)} <span class="muted">${esc(e.by||'')}${e.editedBy?`（${esc(e.editedBy)} 修改過）`:''}</span><br>${esc(e.note)}</div>
+    <div class="tx"><span class="badge" style="background:#475569">${esc(numOf(e))}</span><b>${esc(e.type)}</b> ・ ${esc(e.box)} <span class="muted">${esc(e.by||'')}${e.editedBy?`（${esc(e.editedBy)} 修改過）`:''}</span><br>${esc(e.note)}</div>
     <button class="btn gray" onclick="editEx(${i})">修改</button><button class="btn gray" onclick="delEx(${i})">刪除</button>
+    ${vcBox(e,VR.get(e._id))}
     ${e.photo?`<img src="${e.photo}" class="exph" style="width:100%;height:auto">`:''}</div>`;
   $('#exList').innerHTML=S.ex.length?S.ex.map(exRow).join(''):'<div class="muted">沒有</div>';
-  const miss=S.lines.filter(l=>rem(l)>0&&!pendOf(l)), pend=S.lines.filter(l=>pendOf(l));
-  $('#pendList').innerHTML=pend.length?pend.map(l=>{const e=pendOf(l);return `<div class="it" style="flex-wrap:wrap"><img src="${esc(l.img)}" onerror="this.style.visibility='hidden'">
-    <div class="tx">${esc(dn(l))}<br><span class="badge" style="background:${zc(l.uid)}">${esc(l.uid)}</span>${esc(l.name)} ・ ${esc(l.box)}<br><b style="color:#b45309">說明：${esc(e.note)}</b> <span class="muted">${esc(e.by||'')}</span></div>
-    <button class="btn gray" onclick="stOff('${esc(l.id)}')">修改</button>${e.photo?`<img src="${e.photo}" class="exph" style="width:100%;height:auto">`:''}</div>`}).join(''):'<div class="muted">沒有</div>';
+  const miss=S.lines.filter(l=>rem(l)>0&&!pendOf(l)), pend=N.pd.filter(x=>x.l).map(x=>x.l);
+  $('#pendList').innerHTML=pend.length?pend.map(l=>{const e=S.lst[l.id];return `<div class="it" style="flex-wrap:wrap"><img src="${esc(l.img)}" onerror="this.style.visibility='hidden'">
+    <div class="tx"><span class="badge" style="background:#475569">待確認 ${N.pd.findIndex(x=>x.l===l)+1}</span>${esc(dn(l))}<br><span class="badge" style="background:${zc(l.uid)}">${esc(l.uid)}</span>${esc(l.name)} ・ ${esc(l.box)}<br><b style="color:#b45309">說明：${esc(e.note)}</b> <span class="muted">${esc(e.by||'')}</span></div>
+    ${rem(l)>0?`<button class="btn gray" onclick="stOff('${esc(l.id)}')">修改</button>`:''}${vcBox(e,VR.get(e._id))}${e.photo?`<img src="${e.photo}" class="exph" style="width:100%;height:auto">`:''}</div>`}).join(''):'<div class="muted">沒有</div>';
   const g={};miss.forEach(l=>(g[l.box]=g[l.box]||[]).push(l));
   $('#missList').innerHTML=miss.length?Object.keys(g).map(b=>`<div style="margin-top:6px"><b>${esc(b)}</b>（${g[b].length}）
     <div class="list">${g[b].map(l=>`<div class="it"><img src="${esc(l.img)}" loading="lazy" onerror="this.style.visibility='hidden'"><div class="tx">${esc(dn(l))}${rem(l)>1?' ×'+rem(l):''}${l.st&&l.st!=='onFlight'?' <b style="color:#92400e">['+esc(l.st)+']</b>':''}<br><span class="badge" style="background:${zc(l.uid)}">${esc(l.uid)}</span>${esc(l.name)}</div></div>`).join('')}</div></div>`).join(''):'<div class="muted">沒有 ✅</div>';
@@ -1240,12 +1282,10 @@ function renderReport(){
   const nm=miss.reduce((a,l)=>a+rem(l),0);
   sec('未到貨',Object.keys(g).flatMap(b=>g[b].map(l=>`・${l.box}｜${l.uid} ${l.name}｜${dn(l)}${rem(l)>1?' ×'+rem(l):''}${l.st&&l.st!=='onFlight'?' ['+l.st+']':''}`)),nm+' 件');
   const ph=(lab,e)=>{if(e.photo){REP.push({lab,e});return `（照片：${lab}）`}return ''};
-  const na=S.ex.filter(e=>catOf(e.type)==='na');
-  sec(T_NA,na.map((e,i)=>`${i+1}. ${e.box}箱｜${e.note||'（無說明）'}${ph(T_NA.slice(0,5)+' '+(i+1),e)}`));
-  const pd=[...pend.map(l=>({e:pendOf(l),l})),...S.ex.filter(e=>catOf(e.type)==='pd').map(e=>({e}))];
-  sec(T_PD,pd.map(({e,l},i)=>`${i+1}. ${e.box}箱｜`+(l?`${l.uid} ${l.name}｜${dn(l)}｜`:'')+`異常：${e.note||'（無說明）'}${ph('待確認 '+(i+1),e)}`));
-  const ot=S.ex.filter(e=>catOf(e.type)==='ot');
-  sec('數量不符／其他',ot.map((e,i)=>`${i+1}. ${e.type}｜${e.box}箱｜${e.note||'（無說明）'}${ph('其他 '+(i+1),e)}`));
+  const vc=e=>{const l=VR.get(e._id);return l?`\n　→ ${vcText(e,l)}`:''};
+  sec(T_NA,N.na.map((e,i)=>`${i+1}. ${e.box}箱｜${e.note||'（無說明）'}${ph(T_NA.slice(0,5)+' '+(i+1),e)}${vc(e)}`));
+  sec(T_PD,N.pd.map(({e,l},i)=>`${i+1}. ${e.box}箱｜`+(l?`${l.uid} ${l.name}｜${dn(l)}｜`:'')+`異常：${e.note||'（無說明）'}${ph('待確認 '+(i+1),e)}${vc(e)}`));
+  sec('數量不符／其他',N.ot.map((e,i)=>`${i+1}. ${e.type}｜${e.box}箱｜${e.note||'（無說明）'}${ph('其他 '+(i+1),e)}${vc(e)}`));
   if(!miss.length&&!S.ex.length&&!pend.length) L.push('','全部到齊，無異常。');
   $('#repText').textContent=L.join('\n');prepRep();
   renderSG();renderFiles();
