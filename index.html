@@ -392,6 +392,9 @@ addEventListener('online',()=>$('#net').style.display='none');addEventListener('
 
 /* ================= 解析入庫單 ================= */
 function cleanSku(s){return String(s??'').replace(/[\r\n]/g,'').trim()}
+/* 廠商「重新確認」時會在原名稱後面加「->未在入庫單1, 顏色正確」：
+   拆成原名稱＋廠商備註（vn）。原名稱不動，因為之後出庫單還是用原名稱 */
+function splitVn(s){const m=String(s??'').match(/^(.*?)\s*(?:->|－>|-＞|－＞|→|=>)\s*(.*)$/s);return m?[m[1].trim(),m[2].trim()]:[String(s??'').trim(),'']}
 function parseKey(img){
   img=img||'';
   let m=img.match(/\/goods\/d\/([^/]+)\/\1_col_(\d+)/i);                 // grail
@@ -426,14 +429,15 @@ function parseWorkbook(wb,fname){
   for(const r of rows.slice(1)){
     const nid=v=>String(v??'').trim().replace(/\.0+$/,'');   // 試算表連結讀進來的數字可能是 237322.0
     const id=nid(r[ci('id')]); if(!id) continue;
-    const sku=cleanSku(r[ci('itemNoCode')]), img=String(r[ci('img')]).trim(), size=parseSize(sku);
+    const [sku,vn1]=splitVn(cleanSku(r[ci('itemNoCode')])), [uname,vn2]=splitVn(r[ci('user.name')]);
+    const vn=[vn1,vn2].filter(Boolean).join('；'), img=String(r[ci('img')]).trim(), size=parseSize(sku);
     lines.push({id,sku,qty:Math.max(1,parseInt(r[ci('quantity')])||1),uid:nid(r[ci('user_id')]),
-      name:String(r[ci('user.name')]).trim(),box:grp,jp:nid(r[ci('jpShippingNo')]),
+      name:uname,...(vn?{vn}:{}),box:grp,jp:nid(r[ci('jpShippingNo')]),
       st:ci('status')>=0?String(r[ci('status')]).trim():'',alt:ci('itemNoComplete')>=0?altOf(r[ci('itemNoComplete')]).filter(x=>!sku.startsWith('E'+x)):[],   // 跟主編號相同的不重複顯示
       img,size,sk:sizeKey(size),color:parseColor(sku),...parseKey(img)});
   }
   if(!lines.length) throw new Error(fname+' 沒有資料');
-  return {grp,lines};
+  return {grp,lines,recheck:lines.some(l=>l.vn)};   // 有廠商備註 → 當成「重新確認」檔，只補備註不刪行
 }
 async function readFiles(files){
   const out=[];
@@ -467,7 +471,7 @@ $('#lkGo').onclick=async()=>{
     const f=await readSheetLink(url,name);
     parseWorkbook(f.wb,f.name);   // 先檢查欄位，有錯直接顯示在視窗裡
     close('#mLink');
-    if(linkMode==='new'){toast('建立批次中…',10000);const id=await createBatch([f]);await openBatch(id)}
+    if(linkMode==='new'){toast('建立批次中…',10000);const id=await createBatch([f]);if(id)await openBatch(id)}
     else await addFilesToBatch([f]);
   }catch(e){$('#lkMsg').textContent='⚠️ '+e.message}
 };
@@ -745,7 +749,7 @@ async function bxGo(){
     }
     close('#mBox');
     let ok;
-    if(BX.mode==='new'){toast('建立批次中…',10000);const id=await createBatch(got);ok=true;await openBatch(id)}
+    if(BX.mode==='new'){toast('建立批次中…',10000);const id=await createBatch(got);ok=!!id;if(id)await openBatch(id)}
     else ok=await addFilesToBatch(got,true);
     if(ok){const m=await archiveDriveFiles(files);if(m)await ask(m.trim(),'好',true)}
   }catch(e){
@@ -767,11 +771,34 @@ async function readBook(file){
   return XLSX.read(buf,{type:'array'});
 }
 /* ================= 批次：建立 / 清單 / 開啟 ================= */
-async function createBatch(files){
+/* 廠商重新確認檔：找之前建過、含同箱號的批次（通常已結案），回傳裡面對得到 id 的行 */
+async function priorHits(ids,boxes){
+  const qs=await db.collection(C.batches).where('v','==',VID).get(), out=[];
+  for(const d of qs.docs){const b=d.data();
+    if(!(b.files||[]).some(f=>boxesIn(f).some(x=>boxes.includes(x))))continue;
+    const [ld,sd]=await Promise.all([db.collection(C.lines).doc(d.id).get(),db.collection(C.state).doc(d.id).get()]);
+    const hit=((ld.exists&&ld.data().lines)||[]).filter(l=>ids.has(l.id));
+    if(hit.length)out.push({bid:d.id,name:b.name,closed:!!b.closed,hit,rcv:(sd.exists&&sd.data().rcv)||{}})}
+  return out;
+}
+async function createBatch(files){   // 取消回傳 null
   const parsed=await readFiles(files);
   const lines=[],seen=new Set();let dup=0;
-  for(const p of parsed) for(const l of p.lines){if(seen.has(l.id)){dup++;continue}seen.add(l.id);lines.push(l)}
-  const names=[...new Set(parsed.map(p=>p.grp))];
+  const vnOf=new Map(parsed.flatMap(p=>p.lines).filter(l=>l.vn).map(l=>[l.id,l.vn]));
+  const ord=[...parsed.filter(p=>!p.recheck),...parsed.filter(p=>p.recheck)];   // 原始入庫單優先，箱號才會是原本的
+  // 原批次已結案 → 用重新確認檔開新批次：箱號沿用原批次，原批次那幾行也補上廠商備註；原批次已配籃的件不再放進來
+  const rIds=new Set(ord.filter(p=>p.recheck).flatMap(p=>p.lines.map(l=>l.id)));
+  const prior=rIds.size?await priorHits(rIds,ord.filter(p=>p.recheck).flatMap(p=>boxesIn(p.grp))):[];
+  const open=prior.filter(x=>!x.closed);
+  if(open.length&&!(await ask(`這份重新確認檔的商品在還沒結案的批次裡：\n${open.map(x=>`・${x.name}（${x.hit.length} 行）`).join('\n')}\n\n建議打開那個批次，用「加入入庫單 / 補資料」補備註。\n仍要另外建新批次嗎？`,'仍要建新批次')))return null;
+  const origOf=new Map(), gotIn=new Map();
+  for(const x of prior)for(const l of x.hit){if(!origOf.has(l.id))origOf.set(l.id,l);if((x.rcv[l.id]||0)>0)gotIn.set(l.id,x.name)}
+  for(const p of ord) for(const l of p.lines){if(seen.has(l.id)){if(!p.recheck)dup++;continue}seen.add(l.id);
+    if(p.recheck&&gotIn.has(l.id))continue;   // 之前的批次已經配進籃子
+    const o=p.recheck&&origOf.get(l.id), base=o?{...l,box:o.box}:l;
+    lines.push(vnOf.has(l.id)?{...base,vn:vnOf.get(l.id)}:base)}
+  if(!lines.length){await ask(`這份重新確認檔的 ${gotIn.size} 件，在之前的批次都已經配籃了，不需要建新批次。`,'好',true);return null}
+  const names=[...new Set([...ord.filter(p=>!p.recheck).map(p=>p.grp),...lines.map(l=>l.box)])];
   const d=new Date(), name=`${d.getMonth()+1}/${d.getDate()} `+names.join('、');
   const ref=db.collection(C.batches).doc();
   const b=db.batch();
@@ -780,14 +807,28 @@ async function createBatch(files){
   b.set(db.collection(C.lines).doc(ref.id),{lines});
   b.set(db.collection(C.state).doc(ref.id),{rcv:{}});
   await b.commit();
-  toast(`已建立批次：${lines.length} 行${dup?`（略過重複 ${dup}）`:''}`,3500);
+  // 已結案的原批次：那幾行也記上廠商備註（原名稱不變），之後查紀錄看得到
+  for(const x of prior.filter(x=>x.closed)){const want=new Map(x.hit.filter(l=>vnOf.has(l.id)&&l.vn!==vnOf.get(l.id)).map(l=>[l.id,vnOf.get(l.id)]));if(!want.size)continue;
+    try{await db.runTransaction(async tx=>{const lr=db.collection(C.lines).doc(x.bid);const cur=(await tx.get(lr)).data().lines;tx.set(lr,{lines:cur.map(l=>want.has(l.id)?{...l,vn:want.get(l.id)}:l)})})}catch(e){console.warn(e)}}
+  const fromClosed=lines.filter(l=>origOf.has(l.id)).length;
+  if(prior.length||gotIn.size)await ask(`✅ 已建立批次：${lines.length} 行`+(fromClosed?`\n・${fromClosed} 行對到之前的批次（${prior.map(x=>x.name).join('、')}），箱號沿用原本的，原批次也補上廠商備註`:'')+
+    (gotIn.size?`\n・${gotIn.size} 件之前的批次已經配籃，沒有放進來：\n`+[...gotIn].map(([id,n])=>`　${(origOf.get(id)||{}).uid||''} ${((origOf.get(id)||{}).sku||'').slice(0,22)}（${n}）`).join('\n'):''),'好',true);
+  else toast(`已建立批次：${lines.length} 行${dup?`（略過重複 ${dup}）`:''}`,3500);
   return ref.id;
 }
 const LF=['sku','qty','uid','name','jp','st','img','alt'];   // 同名重傳時會更新的欄位
 const sameLine=(a,b)=>LF.every(k=>JSON.stringify(a[k]??'')===JSON.stringify(b[k]??''));
 async function addFilesToBatch(files,quiet){   // 完成回傳 true（取消回傳 undefined）
-  const parsed=await readFiles(files);
-  const same=parsed.filter(p=>S.files.includes(p.grp)), fresh=parsed.filter(p=>!S.files.includes(p.grp));
+  const parsed=await readFiles(files), norm=parsed.filter(p=>!p.recheck), rchk=parsed.filter(p=>p.recheck);
+  const same=norm.filter(p=>S.files.includes(p.grp)), fresh=norm.filter(p=>!S.files.includes(p.grp));
+  // 廠商重新確認檔：用 id 對到這批已有的行 → 只加上廠商備註（原名稱不變、不刪任何行）；對不到的才當新行加進來
+  const byIdNow=new Map(S.lines.map(l=>[l.id,l]));
+  const rPlan=rchk.map(p=>({p,note:p.lines.filter(l=>l.vn&&byIdNow.has(l.id)&&byIdNow.get(l.id).vn!==l.vn),add:p.lines.filter(l=>!byIdNow.has(l.id))}));
+  if(rchk.length){
+    const msg=rPlan.map(x=>`📄 ${x.p.grp}（廠商重新確認）\n・加上廠商備註 ${x.note.length} 行`+(x.add.length?`\n・這批沒有的、新增 ${x.add.length} 行`:'')+
+      (x.note.length?'\n'+x.note.slice(0,8).map(l=>`　${byIdNow.get(l.id).uid} ${l.sku.slice(0,22)} → ${l.vn}`).join('\n')+(x.note.length>8?`\n　…另 ${x.note.length-8} 行`:''):'')).join('\n\n');
+    if(!(await ask(`偵測到廠商重新確認的資料（名稱後面有「->備註」）。\n原名稱不會改，備註另外顯示在品名後面。\n\n${msg}`,'加上備註'))) return;
+  }
   // 同名入庫單：先算出新舊版差異給同仁確認
   const plan=[];
   for(const p of same){
@@ -803,27 +844,33 @@ async function addFilesToBatch(files,quiet){   // 完成回傳 true（取消回�
       (x.moved.length?`\n⚠️ 收件人改了、衣服要換籃：\n`+x.moved.join('\n'):'')).join('\n\n');
     if(!(await ask(`入庫單名稱相同，會用新版內容更新，已配籃進度保留。\n\n${msg}`+(fresh.length?`\n\n另外 ${fresh.map(p=>p.grp).join('、')} 是新的，會追加進來。`:''),'更新'))) return;
   }
-  let added=0,dup=0,upd=0,del=0;const delIds=[];
+  let added=0,dup=0,upd=0,del=0,note=0,fin=null;const delIds=[];
   await db.runTransaction(async tx=>{
     const lr=db.collection(C.lines).doc(S.id), br=db.collection(C.batches).doc(S.id);
     let cur=(await tx.get(lr)).data().lines; const bd=(await tx.get(br)).data(), files=[...bd.files];
     for(const x of plan){
       const nById=new Map(x.p.lines.map(l=>[l.id,l])), keep=new Set(x.goneKeep.map(l=>l.id));
       cur=cur.filter(l=>{if(l.box!==x.p.grp||nById.has(l.id)||keep.has(l.id))return true;del++;delIds.push(l.id);return false});
-      cur=cur.map(l=>{const n=l.box===x.p.grp&&nById.get(l.id);if(n&&!sameLine(l,n)){upd++;return n}return l});
+      cur=cur.map(l=>{const n=l.box===x.p.grp&&nById.get(l.id);if(n&&!sameLine(l,n)){upd++;return l.vn&&!n.vn?{...n,vn:l.vn}:n}return l});   // 一般重傳不會洗掉廠商備註
     }
+    let vnN=0;const rById=new Map(rchk.flatMap(p=>p.lines).filter(l=>l.vn).map(l=>[l.id,l.vn]));
+    cur=cur.map(l=>{const v=rById.get(l.id);if(v&&l.vn!==v){vnN++;return {...l,vn:v}}return l});
+    note=vnN;
     const byId=new Map(cur.map(l=>[l.id,l]));
-    for(const p of parsed){if(!files.includes(p.grp))files.push(p.grp);for(const l of p.lines){
+    for(const p of parsed){if(!files.includes(p.grp)&&(!p.recheck||p.lines.some(l=>!byId.has(l.id))))files.push(p.grp);for(const l of p.lines){
       const old=byId.get(l.id);
-      if(old){if(old.box!==l.box)dup++;continue}   // 別張入庫單已經有同一個 id
+      if(old){if(old.box!==l.box&&!p.recheck)dup++;continue}   // 別張入庫單已經有同一個 id
       byId.set(l.id,l);cur.push(l);added++}}
-    tx.set(lr,{lines:cur});
+    tx.set(lr,{lines:cur});fin=cur;
     tx.update(br,{indexed:false,files,lineCount:cur.length,qty:cur.reduce((a,l)=>a+l.qty,0),name:bd.name.replace(/ .*$/,' ')+files.join('、')});
   });
+  // 廠商備註對到幾筆例外（例外清單還在 S 裡，用新的行先算好）
+  let refN=0;if(rchk.length&&fin){const keep=S.lines;S.lines=fin;try{refN=vendorRefs().size}finally{S.lines=keep}}
   if(delIds.length)await dropIndex(delIds).catch(e=>console.warn(e));
-  if(!quiet)await ask(`✅ 完成\n`+(upd?`更新 ${upd} 行\n`:'')+(added?`新增 ${added} 行\n`:'')+(del?`移除 ${del} 行\n`:'')+(dup?`（${dup} 行在別張入庫單已經有，略過）\n`:'')+(!upd&&!added&&!del?'內容跟原本一樣，沒有變動。':''),'好',true);
-  if(quiet)toast('✅ 完成：'+([upd&&`更新 ${upd} 行`,added&&`新增 ${added} 行`,del&&`移除 ${del} 行`,dup&&`略過重複 ${dup} 行`].filter(Boolean).join('、')||'內容跟原本一樣'),4000);
+  if(!quiet)await ask(`✅ 完成\n`+(note?`加上廠商備註 ${note} 行\n`:'')+(upd?`更新 ${upd} 行\n`:'')+(added?`新增 ${added} 行\n`:'')+(del?`移除 ${del} 行\n`:'')+(dup?`（${dup} 行在別張入庫單已經有，略過）\n`:'')+(!note&&!upd&&!added&&!del?'內容跟原本一樣，沒有變動。':''),'好',true);
+  if(quiet)toast('✅ 完成：'+([note&&`廠商備註 ${note} 行`,upd&&`更新 ${upd} 行`,added&&`新增 ${added} 行`,del&&`移除 ${del} 行`,dup&&`略過重複 ${dup} 行`].filter(Boolean).join('、')||'內容跟原本一樣'),4000);
   await openBatch(S.id);
+  if(refN){const n=refN;await ask(`廠商備註對到 ${n} 筆例外（例：未在入庫單1）。\n到「回報」頁，例外下面會出現綠色的「廠商確認是這件」，按「配進籃」就完成。`,'好',true)}
   return true;
 }
 async function dropIndex(ids){   // 移除的行：出庫索引裡屬於這批的也拿掉（避免舊籃提示、出庫查詢看到）
@@ -1106,7 +1153,7 @@ function render(){
     return `<button class="chip ${curBox===b||bx.length===1?'on':''} ${dd===tt?'done':''}" data-b="${esc(b)}">${b==='ALL'?'全部':esc(b)} ${dd}/${tt}</button>`}).join('');
   $('#boxChips').querySelectorAll('.chip').forEach(c=>c.onclick=()=>{curBox=bx.length===1?'ALL':c.dataset.b;curJp='ALL';curSize='ALL';curColor='ALL';query='';render()});
   let open=S.lines.filter(l=>rem(l)>0&&(curBox==='ALL'||l.box===curBox));
-  if(query){const q=query.normalize('NFKC').toLowerCase();open=open.filter(l=>l.sku.normalize('NFKC').toLowerCase().includes(q)||l.name.toLowerCase().includes(q)||l.uid.includes(q))}
+  if(query){const q=query.normalize('NFKC').toLowerCase();open=open.filter(l=>l.sku.normalize('NFKC').toLowerCase().includes(q)||(l.vn||'').normalize('NFKC').toLowerCase().includes(q)||l.name.toLowerCase().includes(q)||l.uid.includes(q))}
   // 篩選改成下拉選單（日本單號 / 尺寸 / 顏色），iPhone 會跳出滾輪選擇
   const fill=(sel,all,list,cur,label)=>{const el=$(sel);
     if(list.length<2){el.style.display='none';return}
@@ -1175,17 +1222,56 @@ function renderBaskets(){
 // 舊資料的類型 → 新分類
 const catOf=t=>t===T_NA||t==='入庫單上沒有（多出）'?'na':t===T_PD||t==='名稱/標籤不符'?'pd':'ot';
 let REP=[];   // 回報用：有照片的項目（分享時蓋編號）
+/* 例外編號（回報文字、照片拼圖、廠商回覆都用這組編號）：
+   未在入庫單 N／待確認 N／其他 N。廠商確認過、已配籃的待確認件仍保留編號，避免後面的編號往前移 */
+function exNums(){
+  const pend=S.lines.filter(l=>S.lst&&S.lst[l.id]&&(rem(l)>0||S.lst[l.id].vc));
+  return {na:S.ex.filter(e=>catOf(e.type)==='na'),
+    pd:[...pend.map(l=>({e:S.lst[l.id],l})),...S.ex.filter(e=>catOf(e.type)==='pd').map(e=>({e}))],
+    ot:S.ex.filter(e=>catOf(e.type)==='ot')};
+}
+/* 廠商重新確認的備註（例「未在入庫單1, 顏色正確」）→ 找出指的是哪一筆例外，對應到備註所在的那一行 */
+const VREF={'未在入庫單':'na','待確認':'pd','其他':'ot'};
+function vendorRefs(){   // 回傳 Map：例外文件 _id → 入庫單那一行
+  const N=exNums(), m=new Map();
+  for(const l of S.lines){if(!l.vn)continue;
+    for(const [,k,n] of l.vn.normalize('NFKC').matchAll(/(未在入庫單|待確認|其他)\s*[#＃]?\s*(\d+)/g)){
+      const it=N[VREF[k]][+n-1], e=it&&(it.e||it);if(e&&e._id&&!m.has(e._id))m.set(e._id,l)}}
+  return m;
+}
+const vcText=(e,l)=>`廠商確認：籃 ${l.uid} ${l.name}｜${dn(l)}`+(e.vc||rem(l)<=0?'（已配籃）':'（待配籃）');
+function vcBox(e,l){   // 例外列裡的綠色區塊：廠商說這件是哪一行＋一鍵配籃
+  if(!l)return '';
+  const can=!e.vc&&rem(l)>0&&!S.closed;
+  return `<div style="flex-basis:100%;background:#dcfce7;border-radius:8px;padding:8px;margin-top:6px;display:flex;gap:8px;align-items:center">
+    <img src="${esc(l.img)}" style="width:48px;height:48px;object-fit:cover;border-radius:6px" onerror="this.style.visibility='hidden'">
+    <div class="tx" style="flex:1">✅ <b>廠商確認是這件</b>：<span class="badge" style="background:${zc(l.uid)}">${esc(l.uid)}</span>${esc(l.name)}<br>${esc(dn(l))}</div>
+    ${can?`<button class="btn" onclick="vcAssign('${esc(e._id)}','${esc(l.id)}')">配進籃 ${esc(l.uid)}</button>`:`<b style="white-space:nowrap">${e.vc||rem(l)<=0?'已配籃 ✓':S.closed?'批次已結案':''}</b>`}</div>`;
+}
+async function vcAssign(eid,lid){   // 廠商確認的例外件 → 直接配進那一行的籃子（清點鎖定時也可以，這是刻意的動作）
+  const l=S.lines.find(x=>x.id===lid);if(!l||rem(l)<=0)return toast('這件已經配完了');
+  if(!(await ask(`把這件放進籃 ${l.uid}（${l.name}）？\n${dn(l)}`,'配籃')))return;
+  S.rcv[l.id]=(S.rcv[l.id]||0)+1;
+  const b=db.batch();
+  b.update(db.collection(C.state).doc(S.id),new FP('rcv',l.id),FV.increment(1));
+  b.update(db.collection(C.batches).doc(S.id),{done:FV.increment(1)});
+  b.update(db.collection(C.ex).doc(eid),{vc:{lid:l.id,by:me(),at:Date.now()}});
+  await b.commit().catch(e=>toast('同步失敗：'+e.message,4000));
+  toast(`✅ 已配進籃 ${l.uid}`,2500);render(false);
+}
 function renderReport(){
   if(!S) return;
+  const N=exNums(), VR=vendorRefs(), numOf=e=>{const c=catOf(e.type),k=N[c].findIndex(x=>(x.e||x)===e);return k<0?'':`${{na:'未在入庫單',pd:'待確認',ot:'其他'}[c]} ${k+1}`};
   const exRow=(e,i)=>`<div class="it" style="flex-wrap:wrap">
-    <div class="tx"><b>${esc(e.type)}</b> ・ ${esc(e.box)} <span class="muted">${esc(e.by||'')}${e.editedBy?`（${esc(e.editedBy)} 修改過）`:''}</span><br>${esc(e.note)}</div>
+    <div class="tx"><span class="badge" style="background:#475569">${esc(numOf(e))}</span><b>${esc(e.type)}</b> ・ ${esc(e.box)} <span class="muted">${esc(e.by||'')}${e.editedBy?`（${esc(e.editedBy)} 修改過）`:''}</span><br>${esc(e.note)}</div>
     <button class="btn gray" onclick="editEx(${i})">修改</button><button class="btn gray" onclick="delEx(${i})">刪除</button>
+    ${vcBox(e,VR.get(e._id))}
     ${e.photo?`<img src="${e.photo}" class="exph" style="width:100%;height:auto">`:''}</div>`;
   $('#exList').innerHTML=S.ex.length?S.ex.map(exRow).join(''):'<div class="muted">沒有</div>';
-  const miss=S.lines.filter(l=>rem(l)>0&&!pendOf(l)), pend=S.lines.filter(l=>pendOf(l));
-  $('#pendList').innerHTML=pend.length?pend.map(l=>{const e=pendOf(l);return `<div class="it" style="flex-wrap:wrap"><img src="${esc(l.img)}" onerror="this.style.visibility='hidden'">
-    <div class="tx">${esc(dn(l))}<br><span class="badge" style="background:${zc(l.uid)}">${esc(l.uid)}</span>${esc(l.name)} ・ ${esc(l.box)}<br><b style="color:#b45309">說明：${esc(e.note)}</b> <span class="muted">${esc(e.by||'')}</span></div>
-    <button class="btn gray" onclick="stOff('${esc(l.id)}')">修改</button>${e.photo?`<img src="${e.photo}" class="exph" style="width:100%;height:auto">`:''}</div>`}).join(''):'<div class="muted">沒有</div>';
+  const miss=S.lines.filter(l=>rem(l)>0&&!pendOf(l)), pend=N.pd.filter(x=>x.l).map(x=>x.l);
+  $('#pendList').innerHTML=pend.length?pend.map(l=>{const e=S.lst[l.id];return `<div class="it" style="flex-wrap:wrap"><img src="${esc(l.img)}" onerror="this.style.visibility='hidden'">
+    <div class="tx"><span class="badge" style="background:#475569">待確認 ${N.pd.findIndex(x=>x.l===l)+1}</span>${esc(dn(l))}<br><span class="badge" style="background:${zc(l.uid)}">${esc(l.uid)}</span>${esc(l.name)} ・ ${esc(l.box)}<br><b style="color:#b45309">說明：${esc(e.note)}</b> <span class="muted">${esc(e.by||'')}</span></div>
+    ${rem(l)>0?`<button class="btn gray" onclick="stOff('${esc(l.id)}')">修改</button>`:''}${vcBox(e,VR.get(e._id))}${e.photo?`<img src="${e.photo}" class="exph" style="width:100%;height:auto">`:''}</div>`}).join(''):'<div class="muted">沒有</div>';
   const g={};miss.forEach(l=>(g[l.box]=g[l.box]||[]).push(l));
   $('#missList').innerHTML=miss.length?Object.keys(g).map(b=>`<div style="margin-top:6px"><b>${esc(b)}</b>（${g[b].length}）
     <div class="list">${g[b].map(l=>`<div class="it"><img src="${esc(l.img)}" loading="lazy" onerror="this.style.visibility='hidden'"><div class="tx">${esc(dn(l))}${rem(l)>1?' ×'+rem(l):''}${l.st&&l.st!=='onFlight'?' <b style="color:#92400e">['+esc(l.st)+']</b>':''}<br><span class="badge" style="background:${zc(l.uid)}">${esc(l.uid)}</span>${esc(l.name)}</div></div>`).join('')}</div></div>`).join(''):'<div class="muted">沒有 ✅</div>';
@@ -1196,12 +1282,10 @@ function renderReport(){
   const nm=miss.reduce((a,l)=>a+rem(l),0);
   sec('未到貨',Object.keys(g).flatMap(b=>g[b].map(l=>`・${l.box}｜${l.uid} ${l.name}｜${dn(l)}${rem(l)>1?' ×'+rem(l):''}${l.st&&l.st!=='onFlight'?' ['+l.st+']':''}`)),nm+' 件');
   const ph=(lab,e)=>{if(e.photo){REP.push({lab,e});return `（照片：${lab}）`}return ''};
-  const na=S.ex.filter(e=>catOf(e.type)==='na');
-  sec(T_NA,na.map((e,i)=>`${i+1}. ${e.box}箱｜${e.note||'（無說明）'}${ph(T_NA.slice(0,5)+' '+(i+1),e)}`));
-  const pd=[...pend.map(l=>({e:pendOf(l),l})),...S.ex.filter(e=>catOf(e.type)==='pd').map(e=>({e}))];
-  sec(T_PD,pd.map(({e,l},i)=>`${i+1}. ${e.box}箱｜`+(l?`${l.uid} ${l.name}｜${dn(l)}｜`:'')+`異常：${e.note||'（無說明）'}${ph('待確認 '+(i+1),e)}`));
-  const ot=S.ex.filter(e=>catOf(e.type)==='ot');
-  sec('數量不符／其他',ot.map((e,i)=>`${i+1}. ${e.type}｜${e.box}箱｜${e.note||'（無說明）'}${ph('其他 '+(i+1),e)}`));
+  const vc=e=>{const l=VR.get(e._id);return l?`\n　→ ${vcText(e,l)}`:''};
+  sec(T_NA,N.na.map((e,i)=>`${i+1}. ${e.box}箱｜${e.note||'（無說明）'}${ph(T_NA.slice(0,5)+' '+(i+1),e)}${vc(e)}`));
+  sec(T_PD,N.pd.map(({e,l},i)=>`${i+1}. ${e.box}箱｜`+(l?`${l.uid} ${l.name}｜${dn(l)}｜`:'')+`異常：${e.note||'（無說明）'}${ph('待確認 '+(i+1),e)}${vc(e)}`));
+  sec('數量不符／其他',N.ot.map((e,i)=>`${i+1}. ${e.type}｜${e.box}箱｜${e.note||'（無說明）'}${ph('其他 '+(i+1),e)}${vc(e)}`));
   if(!miss.length&&!S.ex.length&&!pend.length) L.push('','全部到齊，無異常。');
   $('#repText').textContent=L.join('\n');prepRep();
   renderSG();renderFiles();
@@ -1375,7 +1459,7 @@ $('#camClose').onclick=stopCam;
 
 /* ================= 其他按鈕 ================= */
 $('#exportBtn').onclick=()=>{
-  const rows=S.lines.map(l=>({入庫單:l.box,日本單號:l.jp,狀態:l.st,ID:l.uid,名稱:l.name,id:l.id,商品編號:l.sku,數量:l.qty,已到:Math.min(l.qty,S.rcv[l.id]||0),缺:Math.max(0,rem(l))}));
+  const rows=S.lines.map(l=>({入庫單:l.box,日本單號:l.jp,狀態:l.st,ID:l.uid,名稱:l.name,id:l.id,商品編號:l.sku,廠商備註:l.vn||"",數量:l.qty,已到:Math.min(l.qty,S.rcv[l.id]||0),缺:Math.max(0,rem(l))}));
   const ex=S.ex.map(e=>({類型:e.type,入庫單:e.box,說明:e.note,記錄者:e.by,時間:new Date(e.t).toLocaleString()}));
   const wb=XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(rows),'配籃結果');
@@ -1544,7 +1628,7 @@ $('#copyRep').onclick=async()=>{try{await navigator.clipboard.writeText($('#repT
 $('#showClosed').onclick=()=>{showClosed=!showClosed;$('#showClosed').textContent=showClosed?'隱藏已結案':'顯示已結案';showList()};
 $('#backBtn').onclick=()=>showList();
 $('#upFile').onchange=async e=>{const fs=[...e.target.files];e.target.value='';if(!fs.length)return;
-  toast('上傳中…',10000);try{const id=await createBatch(fs);await openBatch(id)}catch(err){toast('上傳失敗：'+err.message,5000)}};
+  toast('上傳中…',10000);try{const id=await createBatch(fs);if(id)await openBatch(id)}catch(err){toast('上傳失敗：'+err.message,5000)}};
 $('#addFile').onchange=async e=>{const fs=[...e.target.files];e.target.value='';if(!fs.length)return;
   try{await addFilesToBatch(fs)}catch(err){toast('加入失敗：'+err.message,5000)}};
 
@@ -1589,7 +1673,7 @@ function suggPick(l){assign(l,{})}
 /* ================= 輸入時即時列出候選（模糊比對） =================
    打前幾碼就列出可能的商品：編號開頭符合的排前面，包含的排後面；點一下就配 */
 // 顯示用名稱：uniqlo 的 itemNoComplete 其他編號用括弧附在後面（吊牌常印這些號碼）
-const dn=o=>o.sku+(o.alt&&o.alt.length?`（${o.alt.join('/')}）`:'');
+const dn=o=>o.sku+(o.alt&&o.alt.length?`（${o.alt.join('/')}）`:'')+(o.vn?`【廠商：${o.vn}】`:'');   // vn：廠商重新確認的備註
 const altOf=s=>[...new Set(String(s||'').split('|').slice(1).map(x=>x.trim()).filter(x=>/^\d{5,}$/.test(x)))];
 const nrm=s=>String(s||'').normalize('NFKC').toUpperCase().replace(/[^A-Z0-9]/g,'');
 function keysOf(c){
