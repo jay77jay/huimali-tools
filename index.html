@@ -920,12 +920,23 @@ async function showList(){
   }catch(e){$('#batchList').innerHTML=`<div class="empty">讀取失敗：${esc(e.message)}</div>`}
 }
 function stopListen(){unsub.forEach(f=>f());unsub=[]}
+/* 舊資料修正：新版之前建的批次，品名可能連「->廠商備註」一起存進去 → 拆開存回（原名稱、備註），出庫索引也重建 */
+async function fixVnLines(id){
+  if(!S.lines.some(l=>/->|－>|-＞|－＞|→|=>/.test(l.sku+l.name)))return;
+  const fix=l=>{const [sku,v1]=splitVn(l.sku),[name,v2]=splitVn(l.name),v=[l.vn,v1,v2].filter(Boolean).join('；');
+    if(!v1&&!v2)return l;const size=parseSize(sku);return {...l,sku,name,size,sk:sizeKey(size),color:parseColor(sku),vn:v}};
+  let n=0;
+  await db.runTransaction(async tx=>{const lr=db.collection(C.lines).doc(id);const cur=(await tx.get(lr)).data().lines;
+    const nx=cur.map(l=>{const f=fix(l);if(f!==l)n++;return f});if(n){tx.set(lr,{lines:nx});tx.update(db.collection(C.batches).doc(id),{indexed:false})}});
+  if(n){S.lines=(await db.collection(C.lines).doc(id).get()).data().lines;toast(`已修正 ${n} 行：廠商備註從品名拆開`,3500)}
+}
 async function openBatch(id){
   stopListen();
   $('#batchList').innerHTML='<div class="empty">開啟中…</div>';
   const [bd,ld]=await Promise.all([db.collection(C.batches).doc(id).get(),db.collection(C.lines).doc(id).get()]);
   if(!bd.exists||!ld.exists){toast('找不到這個批次');return showList()}
   S={id,...bd.data(),lines:ld.data().lines,rcv:{},ex:[],lst:{}};S.locked=!!S.locked;
+  await fixVnLines(id).catch(e=>console.warn(e));
   myLog=[];curBox='ALL';curJp='ALL';curSize='ALL';curColor='ALL';query='';
   $('#tabs').style.display='flex';$('#backBtn').style.display='inline-block';
   // 即時同步：配籃進度、例外、學習
@@ -1470,7 +1481,7 @@ $('#exportBtn').onclick=()=>{
    新品：整批所有入庫單合併，同 SKU 只留一列（含未到貨，舊商品 SG 會自動擋掉）
    入庫：只算「已到貨、還沒下載過」的件，同 SKU 加總；SG 只收一個工作表，來源明細另存一檔
    每次下載都記錄（bkt_sgx），下次不再重複；上傳失敗可以作廢重來 */
-const cleanSG=s=>String(s??'').replace(/[\r\n]/g,'').trim();
+const cleanSG=s=>splitVn(String(s??'').replace(/[\r\n]/g,'').trim())[0];   // SG 只認原名稱：廠商「->備註」一律拿掉
 const ymd=()=>{const d=new Date();return String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0')};
 const fileTag=()=>S.files.join('_').replace(/\//g,'_');
 const sortSku=(a,b)=>a.sku<b.sku?-1:a.sku>b.sku?1:0;

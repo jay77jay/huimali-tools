@@ -412,7 +412,7 @@ $('#lkGo').onclick=async()=>{
 /* ============ SG 編號以入庫為準 ============
    廠商修正了入庫單的商品編號，但出庫單還是舊的 → SG 裡的庫存是用「入庫時上傳的編號」建的，
    SG出 要用同一個編號才扣得到庫存。依 id 找：SG 入庫檔下載紀錄 > 入庫單目前的編號 */
-const cleanSG=s=>String(s??'').replace(/[\r\n]/g,'').trim();
+const cleanSG=s=>String(s??'').replace(/[\r\n]/g,'').trim().replace(/\s*(?:->|－>|-＞|－＞|→|=>).*$/s,'').trim();   // 廠商「->備註」不屬於品名
 async function fixSku(orders){
   const its=orders.flatMap(o=>o.items);
   const docs=await Promise.all(its.map(it=>db.collection(C.items).doc(it.id).get()));
@@ -556,7 +556,7 @@ function buildSG(o){
   o.orders.filter(x=>!x.cancel).forEach(x=>x.items.forEach(it=>{
     const r=new Array(45).fill(null);
     r[0]=x.no;r[1]='TWD';r[6]='待處理';r[7]=date;r[8]=V.ship;r[9]='已付款';r[13]=x.uid;
-    r[27]=x.no+'_'+x.name;r[28]=x.name;r[39]='庫存貨品';r[40]=it.sgSku||it.sku;r[41]=it.sgSku||it.sku;r[42]=0;r[43]=1;r[44]=x.oid;aoa.push(r)}));
+    r[27]=x.no+'_'+x.name;r[28]=x.name;r[39]='庫存貨品';r[40]=it.sgSku||cleanSG(it.sku);r[41]=it.sgSku||cleanSG(it.sku);r[42]=0;r[43]=1;r[44]=x.oid;aoa.push(r)}));
   const ws=XLSX.utils.aoa_to_sheet(aoa,{cellDates:true});
   for(let i=2;i<=aoa.length;i++){const c=ws['H'+i];if(c){c.z='yyyy/mm/dd'}}
   return ws;
