@@ -966,7 +966,9 @@ async function openBatch(id){
   // 即時同步：配籃進度、例外、學習
   unsub.push(db.collection(C.state).doc(id).onSnapshot(d=>{if(!S||S.id!==id)return;const x=d.data()||{};S.rcv=x.rcv||{};S.sgIn=x.sgIn||{};render(false)}));
   unsub.push(db.collection(C.sgx).where('bid','==',id).onSnapshot(q=>{if(!S||S.id!==id)return;S.sgx=q.docs.map(d=>({_id:d.id,...d.data()})).sort((a,b)=>a.at-b.at);renderSG()}));
-  unsub.push(db.collection(C.ex).where('bid','==',id).onSnapshot(q=>{if(!S||S.id!==id)return;const all=q.docs.map(d=>({_id:d.id,...d.data()})).sort((a,b)=>a.t-b.t);S.ex=all.filter(x=>!x.lid);S.lst={};all.filter(x=>x.lid).forEach(x=>S.lst[x.lid]=x);render(false)}));
+  let exFirst=true;
+  unsub.push(db.collection(C.ex).where('bid','==',id).onSnapshot(q=>{if(!S||S.id!==id)return;const all=q.docs.map(d=>({_id:d.id,...d.data()})).sort((a,b)=>a.t-b.t);S.ex=all.filter(x=>!x.lid);S.lst={};all.filter(x=>x.lid).forEach(x=>S.lst[x.lid]=x);render(false);
+    if(exFirst&&!q.metadata.fromCache){exFirst=false;fixExNo(id).catch(e=>console.warn(e))}}));
   unsub.push(db.collection(C.batches).doc(id).onSnapshot(d=>{if(d.exists&&S&&S.id===id){S.name=d.data().name;S.files=d.data().files;S.closed=d.data().closed;S.locked=!!d.data().locked;render(false)}}));
   render();show('match');showBoxBtns();
   loadPrior().catch(e=>console.warn(e));
@@ -1166,7 +1168,7 @@ $('#stSave').onclick=()=>{
   if(!note){toast('請寫異常說明（例：顏色標錯）',3000);return}
   const v={bid:S.id,lid:l.id,type:T_PD,box:l.box,note,photo:stPhotoData||null,uid:l.uid,name:l.name,sku:l.sku};
   if(cur)db.collection(C.ex).doc(cur._id).update({...v,editedBy:me(),editedAt:Date.now()}).catch(e=>toast(e.message));
-  else db.collection(C.ex).add({...v,t:Date.now(),by:me()}).catch(e=>toast(e.message));
+  else{close('#mSt');nextExNo('pd').then(no=>db.collection(C.ex).add({...v,...(no?{no}:{}),t:Date.now(),by:me()})).catch(e=>toast(e.message));toast('已標記待確認');return}
   close('#mSt');toast('已標記待確認');
 };
 function stOff(i){const l=S.lines.find(x=>x.id===i);if(l)openSt(l)}
@@ -1259,19 +1261,67 @@ const catOf=t=>t===T_NA||t==='入庫單上沒有（多出）'?'na':t===T_PD||t==
 let REP=[];   // 回報用：有照片的項目（分享時蓋編號）
 /* 例外編號（回報文字、照片拼圖、廠商回覆都用這組編號）：
    未在入庫單 N／待確認 N／其他 N。廠商確認過、已配籃的待確認件仍保留編號，避免後面的編號往前移 */
+/* 編號在建立時就發好、存在例外文件的 no（批次文件 exNo 是各分類的計數器），之後不會變：
+   件被配走、刪除 → 留空號，其他編號不動（以前每次重算，分享後配籃會讓後面的編號往前移，廠商回覆就對錯件）
+   回傳每類 [{e,l?}]（依編號排序）：未在入庫單、其他＝全部；待確認＝還沒配完的件＋廠商確認過的 */
+const exCat=e=>e.lid?'pd':catOf(e.type);
+const CAT_LBL={na:'未在入庫單',pd:'待確認',ot:'其他'};
+const exLbl=e=>e&&e.no?`${CAT_LBL[exCat(e)]} ${e.no}`:'';
 function exNums(){
   const pend=S.lines.filter(l=>S.lst&&S.lst[l.id]&&(rem(l)>0||S.lst[l.id].vc));
-  return {na:S.ex.filter(e=>catOf(e.type)==='na'),
-    pd:[...pend.map(l=>({e:S.lst[l.id],l})),...S.ex.filter(e=>catOf(e.type)==='pd').map(e=>({e}))],
-    ot:S.ex.filter(e=>catOf(e.type)==='ot')};
+  const srt=a=>a.sort((x,y)=>(x.e.no||1e9)-(y.e.no||1e9)||(x.e.t||0)-(y.e.t||0));
+  return {na:srt(S.ex.filter(e=>catOf(e.type)==='na').map(e=>({e}))),
+    pd:srt([...pend.map(l=>({e:S.lst[l.id],l})),...S.ex.filter(e=>catOf(e.type)==='pd').map(e=>({e}))]),
+    ot:srt(S.ex.filter(e=>catOf(e.type)==='ot').map(e=>({e})))};
+}
+const allEx=()=>[...S.ex,...Object.values(S.lst||{})];
+// 取號：用交易讀寫批次文件的計數器，兩個人同時新增也不會拿到同一號（離線失敗就先不給號，下次開啟補號）
+async function nextExNo(cat){
+  const br=db.collection(C.batches).doc(S.id);
+  try{return await db.runTransaction(async tx=>{const d=(await tx.get(br)).data()||{};const n=((d.exNo||{})[cat]||0)+1;tx.update(br,{['exNo.'+cat]:n});return n})}
+  catch(e){console.warn(e);return null}
+}
+/* 舊資料補號（改版前建立的例外沒有 no）：照改版前畫面的順序給號。
+   待確認依入庫單順序、而且包含之後才配進籃的件（改版前它們會從清單消失），最接近當初分享出去的編號 */
+async function fixExNo(id){
+  if(!S||S.id!==id)return;
+  const need=allEx().filter(e=>!e.no);if(!need.length)return;
+  const order={na:[],pd:[],ot:[]};
+  S.lines.forEach(l=>{if(S.lst[l.id])order.pd.push(S.lst[l.id])});
+  S.ex.forEach(e=>order[catOf(e.type)].push(e));
+  const br=db.collection(C.batches).doc(id);
+  await db.runTransaction(async tx=>{
+    const d=(await tx.get(br)).data()||{}, cnt={...(d.exNo||{})};
+    const docs=await Promise.all(need.map(e=>tx.get(db.collection(C.ex).doc(e._id))));
+    const todo=new Set(docs.filter(x=>x.exists&&!x.data().no).map(x=>x.id));
+    for(const c of ['na','pd','ot']){
+      let n=Math.max(cnt[c]||0,0,...order[c].filter(e=>e.no).map(e=>e.no));
+      for(const e of order[c])if(todo.has(e._id)){n++;tx.update(db.collection(C.ex).doc(e._id),{no:n})}
+      cnt[c]=n;
+    }
+    tx.update(br,{exNo:cnt});
+  });
+}
+// 手動改編號（對照當初分享的照片修正）：跟同類別已經用這個號的互換
+async function setExNo(eid){
+  const e=allEx().find(x=>x._id===eid);if(!e)return;
+  const c=exCat(e), v=prompt(`把「${exLbl(e)||CAT_LBL[c]}」改成第幾號？\n（以當初分享給廠商的照片／文字為準；跟別筆同號會互換）`,e.no||'');
+  if(v===null)return;const n=parseInt(v,10);if(!(n>0))return toast('請輸入數字');
+  const o=allEx().find(x=>x!==e&&exCat(x)===c&&x.no===n);
+  const b=db.batch();b.update(db.collection(C.ex).doc(e._id),{no:n});if(o)b.update(db.collection(C.ex).doc(o._id),{no:e.no||null});
+  const br=db.collection(C.batches).doc(S.id);
+  await b.commit().catch(x=>toast('修改失敗：'+x.message,4000));
+  const mx=Math.max(n,...allEx().filter(x=>exCat(x)===c).map(x=>x.no||0));
+  db.runTransaction(async tx=>{const d=(await tx.get(br)).data()||{};if(((d.exNo||{})[c]||0)<mx)tx.update(br,{['exNo.'+c]:mx})}).catch(x=>console.warn(x));
+  toast(o?`已和 ${exLbl(o)} 互換`:'已修改編號');
 }
 /* 廠商重新確認的備註（例「未在入庫單1, 顏色正確」）→ 找出指的是哪一筆例外，對應到備註所在的那一行 */
 const VREF={'未在入庫單':'na','待確認':'pd','其他':'ot'};
 function vendorRefs(){   // 回傳 Map：例外文件 _id → 入庫單那一行
-  const N=exNums(), m=new Map();
+  const all=allEx(), m=new Map();   // 用固定編號找（包含已經從清單消失的件）
   for(const l of S.lines){if(!l.vn)continue;
     for(const [,k,n] of l.vn.normalize('NFKC').matchAll(/(未在入庫單|待確認|其他)\s*[#＃]?\s*(\d+)/g)){
-      const it=N[VREF[k]][+n-1], e=it&&(it.e||it);if(e&&e._id&&!m.has(e._id))m.set(e._id,l)}}
+      const e=all.find(x=>exCat(x)===VREF[k]&&x.no===+n);if(e&&!m.has(e._id))m.set(e._id,l)}}
   return m;
 }
 const vcText=(e,l)=>`廠商確認：籃 ${l.uid} ${l.name}｜${dn(l)}`+(e.vc||rem(l)<=0?'（已配籃）':'（待配籃）');
@@ -1285,7 +1335,8 @@ function vcBox(e,l){   // 例外列裡的綠色區塊：廠商說這件是哪一
 }
 async function vcAssign(eid,lid){   // 廠商確認的例外件 → 直接配進那一行的籃子（清點鎖定時也可以，這是刻意的動作）
   const l=S.lines.find(x=>x.id===lid);if(!l||rem(l)<=0)return toast('這件已經配完了');
-  if(!(await ask(`把這件放進籃 ${l.uid}（${l.name}）？\n${dn(l)}`,'配籃')))return;
+  const e=allEx().find(x=>x._id===eid);
+  if(!(await ask(`請先核對：手上這件跟回報照片「${exLbl(e)}」（${e?e.box+'箱｜'+(e.note||''):''}）是同一件？\n\n是的話放進籃 ${l.uid}（${l.name}）\n${dn(l)}`,'是同一件，配籃')))return;
   S.rcv[l.id]=(S.rcv[l.id]||0)+1;
   const b=db.batch();
   b.update(db.collection(C.state).doc(S.id),new FP('rcv',l.id),FV.increment(1));
@@ -1296,17 +1347,17 @@ async function vcAssign(eid,lid){   // 廠商確認的例外件 → 直接配進
 }
 function renderReport(){
   if(!S) return;
-  const N=exNums(), VR=vendorRefs(), numOf=e=>{const c=catOf(e.type),k=N[c].findIndex(x=>(x.e||x)===e);return k<0?'':`${{na:'未在入庫單',pd:'待確認',ot:'其他'}[c]} ${k+1}`};
+  const N=exNums(), VR=vendorRefs(), numOf=e=>exLbl(e)||'編號產生中', noBtn=e=>`<button class="btn gray" onclick="setExNo('${esc(e._id)}')">改編號</button>`;
   const exRow=(e,i)=>`<div class="it" style="flex-wrap:wrap">
     <div class="tx"><span class="badge" style="background:#475569">${esc(numOf(e))}</span><b>${esc(e.type)}</b> ・ ${esc(e.box)} <span class="muted">${esc(e.by||'')}${e.editedBy?`（${esc(e.editedBy)} 修改過）`:''}</span><br>${esc(e.note)}</div>
-    <button class="btn gray" onclick="editEx(${i})">修改</button><button class="btn gray" onclick="delEx(${i})">刪除</button>
+    <button class="btn gray" onclick="editEx(${i})">修改</button>${noBtn(e)}<button class="btn gray" onclick="delEx(${i})">刪除</button>
     ${vcBox(e,VR.get(e._id))}
     ${e.photo?`<img src="${e.photo}" class="exph" style="width:100%;height:auto">`:''}</div>`;
   $('#exList').innerHTML=S.ex.length?S.ex.map(exRow).join(''):'<div class="muted">沒有</div>';
   const miss=S.lines.filter(l=>rem(l)>0&&!pendOf(l)), pend=N.pd.filter(x=>x.l).map(x=>x.l);
   $('#pendList').innerHTML=pend.length?pend.map(l=>{const e=S.lst[l.id];return `<div class="it" style="flex-wrap:wrap"><img src="${esc(l.img)}" onerror="this.style.visibility='hidden'">
-    <div class="tx"><span class="badge" style="background:#475569">待確認 ${N.pd.findIndex(x=>x.l===l)+1}</span>${esc(dn(l))}<br><span class="badge" style="background:${zc(l.uid)}">${esc(l.uid)}</span>${esc(l.name)} ・ ${esc(l.box)}<br><b style="color:#b45309">說明：${esc(e.note)}</b> <span class="muted">${esc(e.by||'')}</span></div>
-    ${rem(l)>0?`<button class="btn gray" onclick="stOff('${esc(l.id)}')">修改</button>`:''}${vcBox(e,VR.get(e._id))}${e.photo?`<img src="${e.photo}" class="exph" style="width:100%;height:auto">`:''}</div>`}).join(''):'<div class="muted">沒有</div>';
+    <div class="tx"><span class="badge" style="background:#475569">${esc(numOf(e))}</span>${esc(dn(l))}<br><span class="badge" style="background:${zc(l.uid)}">${esc(l.uid)}</span>${esc(l.name)} ・ ${esc(l.box)}<br><b style="color:#b45309">說明：${esc(e.note)}</b> <span class="muted">${esc(e.by||'')}</span></div>
+    ${rem(l)>0?`<button class="btn gray" onclick="stOff('${esc(l.id)}')">修改</button>`:''}${noBtn(e)}${vcBox(e,VR.get(e._id))}${e.photo?`<img src="${e.photo}" class="exph" style="width:100%;height:auto">`:''}</div>`}).join(''):'<div class="muted">沒有</div>';
   const g={};miss.forEach(l=>(g[l.box]=g[l.box]||[]).push(l));
   $('#missList').innerHTML=miss.length?Object.keys(g).map(b=>`<div style="margin-top:6px"><b>${esc(b)}</b>（${g[b].length}）
     <div class="list">${g[b].map(l=>`<div class="it"><img src="${esc(l.img)}" loading="lazy" onerror="this.style.visibility='hidden'"><div class="tx">${esc(dn(l))}${rem(l)>1?' ×'+rem(l):''}${l.st&&l.st!=='onFlight'?' <b style="color:#92400e">['+esc(l.st)+']</b>':''}<br><span class="badge" style="background:${zc(l.uid)}">${esc(l.uid)}</span>${esc(l.name)}</div></div>`).join('')}</div></div>`).join(''):'<div class="muted">沒有 ✅</div>';
@@ -1318,14 +1369,15 @@ function renderReport(){
   sec('未到貨',Object.keys(g).flatMap(b=>g[b].map(l=>`・${l.box}｜${l.uid} ${l.name}｜${dn(l)}${rem(l)>1?' ×'+rem(l):''}${l.st&&l.st!=='onFlight'?' ['+l.st+']':''}`)),nm+' 件');
   const ph=(lab,e)=>{if(e.photo){REP.push({lab,e});return `（照片：${lab}）`}return ''};
   const vc=e=>{const l=VR.get(e._id);return l?`\n　→ ${vcText(e,l)}`:''};
-  sec(T_NA,N.na.map((e,i)=>`${i+1}. ${e.box}箱｜${e.note||'（無說明）'}${ph(T_NA.slice(0,5)+' '+(i+1),e)}${vc(e)}`));
-  sec(T_PD,N.pd.map(({e,l},i)=>`${i+1}. ${e.box}箱｜`+(l?`${l.uid} ${l.name}｜${dn(l)}｜`:'')+`異常：${e.note||'（無說明）'}${ph('待確認 '+(i+1),e)}${vc(e)}`));
-  sec('數量不符／其他',N.ot.map((e,i)=>`${i+1}. ${e.type}｜${e.box}箱｜${e.note||'（無說明）'}${ph('其他 '+(i+1),e)}${vc(e)}`));
+  const no=e=>e.no||'?';
+  sec(T_NA,N.na.map(({e})=>`${no(e)}. ${e.box}箱｜${e.note||'（無說明）'}${ph('未在入庫單 '+no(e),e)}${vc(e)}`));
+  sec(T_PD,N.pd.map(({e,l})=>`${no(e)}. ${e.box}箱｜`+(l?`${l.uid} ${l.name}｜${dn(l)}｜`:'')+`異常：${e.note||'（無說明）'}${ph('待確認 '+no(e),e)}${vc(e)}`));
+  sec('數量不符／其他',N.ot.map(({e})=>`${no(e)}. ${e.type}｜${e.box}箱｜${e.note||'（無說明）'}${ph('其他 '+no(e),e)}${vc(e)}`));
   if(!miss.length&&!S.ex.length&&!pend.length) L.push('','全部到齊，無異常。');
   $('#repText').textContent=L.join('\n');prepRep();
   renderSG();renderFiles();
 }
-async function delEx(i){if(await ask('刪除這筆例外？','刪除')){db.collection(C.ex).doc(S.ex[i]._id).delete().catch(e=>toast(e.message))}}
+async function delEx(i){if(await ask(`刪除這筆例外（${exLbl(S.ex[i])}）？\n這個編號會空著，其他編號不會變。`,'刪除')){db.collection(C.ex).doc(S.ex[i]._id).delete().catch(e=>toast(e.message))}}
 
 /* ================= 籃子標籤 =================
    有開 EZFUN 本機服務（Jay 電腦 start-shipment-agent.bat，localhost:3096）時，跟黑貓託運單一樣直接送印：
@@ -1447,10 +1499,11 @@ $('#exCancel').onclick=()=>close('#mEx');
 $('#exSave').onclick=()=>{
   const v={type:$('#exType').value,box:$('#exBox').value,note:$('#exNote').value.trim(),photo:exPhotoData||null};
   if(exEditId){
-    db.collection(C.ex).doc(exEditId).update({...v,editedBy:me(),editedAt:Date.now()}).catch(e=>toast('儲存失敗：'+e.message,4000));
+    const old=S.ex.find(e=>e._id===exEditId), id=exEditId, moveCat=old&&catOf(old.type)!==catOf(v.type);   // 換分類 → 在新分類重新取號
+    (moveCat?nextExNo(catOf(v.type)):Promise.resolve(0)).then(no=>db.collection(C.ex).doc(id).update({...v,...(moveCat?{no:no||null}:{}),editedBy:me(),editedAt:Date.now()})).catch(e=>toast('儲存失敗：'+e.message,4000));
     close('#mEx');toast('已修改');exEditId=null;return;
   }
-  db.collection(C.ex).add({bid:S.id,...v,t:Date.now(),by:me()}).catch(e=>toast('儲存失敗：'+e.message,4000));
+  nextExNo(catOf(v.type)).then(no=>db.collection(C.ex).add({bid:S.id,...v,...(no?{no}:{}),t:Date.now(),by:me()})).catch(e=>toast('儲存失敗：'+e.message,4000));
   close('#mEx');clearResult();toast('已記錄');
 };
 $('#addExBtn').onclick=()=>openEx();
