@@ -416,7 +416,9 @@ function parseColor(sku){let s=sku.normalize('NFKC').split('/')[0];
 /* 箱號格式：0 開頭、共 8 碼英數、至少含一個英文字（例 0V3FS778、0M5FV110）。
    廠商換檔期時前 4 碼會變，所以不寫死前綴 */
 const BOX='0(?=[A-Z0-9]{0,6}[A-Z])[A-Z0-9]{7}(?![A-Z0-9])';
-function grpLabel(fname){const m=fname.match(new RegExp(`(?:^|[^A-Z0-9])(${BOX}(?:_${BOX})*)`,'i'));return m?m[1].toUpperCase().replace(/_/g,'/'):fname.replace(/\.xlsx?$/i,'')}
+function grpLabel(fname){const m=fname.match(new RegExp(`(?:^|[^A-Z0-9])(${BOX}(?:\\s*[_/／]\\s*${BOX})*)`,'i'));return m?boxesIn(m[1]).join('/'):fname.replace(/\.xlsx?$/i,'')}
+// 一張入庫單含幾箱的說明（2 箱以上才顯示），例「（3 箱：378、379、380）」
+const boxNote=g=>{const b=boxesIn(g);return b.length>1?`（${b.length} 箱：${b.map(x=>x.slice(-3)).join('、')}）`:''};
 function parseWorkbook(wb,fname){
   const grp=grpLabel(fname);
   const ws=wb.Sheets['main']||wb.Sheets[wb.SheetNames[0]];
@@ -742,7 +744,7 @@ function bxRender(){
     <div><b style="font-size:18px">✅ ${esc(r.b)}</b> <span class="muted">${srcTag[r.src]||''}</span>
       ${inThis.has(r.b)?'<span class="badge" style="background:#b45309">這批已有</span>':used.has(r.b)?`<span class="badge" style="background:#b45309">已在批次：${esc(used.get(r.b))}</span>`:''}</div>
     ${r.fs.map(f=>`<label style="display:flex;gap:8px;align-items:center;margin-top:4px;font-size:15px"><input type="checkbox" data-fid="${esc(f.id)}" ${BX.sel.has(f.id)?'checked':''} style="width:22px;height:22px;flex:none">
-      <span>📄 ${esc(f.name)}${f.sub?` <span class="muted">（在「${esc(f.sub)}」＝下載過）</span>`:''} <a href="https://drive.google.com/open?id=${esc(f.id)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">開啟</a></span></label>`).join('')}</div>`).join('');
+      <span>📄 ${esc(f.name)}${f.boxes.length>1?` <b style="color:#2563eb">${esc(boxNote(f.name))}，同一張單</b>`:''}${f.sub?` <span class="muted">（在「${esc(f.sub)}」＝下載過）</span>`:''} <a href="https://drive.google.com/open?id=${esc(f.id)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">開啟</a></span></label>`).join('')}</div>`).join('');
   $('#bxList').querySelectorAll('[data-fid]').forEach(cb=>cb.onchange=()=>{cb.checked?BX.sel.add(cb.dataset.fid):BX.sel.delete(cb.dataset.fid);bxRender()});
   const miss=BX.miss||[], ct=(dCfg()||{}).contact;
   const lineMsg=miss.length&&ct?`${miss.join('、')} @${ct} 這箱沒有提供入庫單~ 再麻煩您`:'';
@@ -838,6 +840,9 @@ const LF=['sku','qty','uid','name','jp','st','img','alt'];   // 同名重傳時�
 const sameLine=(a,b)=>LF.every(k=>JSON.stringify(a[k]??'')===JSON.stringify(b[k]??''));
 async function addFilesToBatch(files,quiet){   // 完成回傳 true（取消回傳 undefined）
   const parsed=await readFiles(files), norm=parsed.filter(p=>!p.recheck), rchk=parsed.filter(p=>p.recheck);
+  const ren=new Map();   // 舊名稱 → 新名稱
+  for(const p of norm){const bs=boxesIn(p.grp);if(bs.length>1&&!S.files.includes(p.grp)&&S.files.includes(bs[0])){ren.set(bs[0],p.grp)}}
+  if(ren.size){S.lines=S.lines.map(l=>ren.has(l.box)?{...l,box:ren.get(l.box)}:l);S.files=S.files.map(f=>ren.get(f)||f)}
   const same=norm.filter(p=>S.files.includes(p.grp)), fresh=norm.filter(p=>!S.files.includes(p.grp));
   // 廠商重新確認檔：用 id 對到這批已有的行 → 只加上廠商備註（原名稱不變、不刪任何行）；對不到的才當新行加進來
   const byIdNow=new Map(S.lines.map(l=>[l.id,l]));
@@ -865,7 +870,8 @@ async function addFilesToBatch(files,quiet){   // 完成回傳 true（取消回�
   let added=0,dup=0,upd=0,del=0,note=0,fin=null;const delIds=[];
   await db.runTransaction(async tx=>{
     const lr=db.collection(C.lines).doc(S.id), br=db.collection(C.batches).doc(S.id);
-    let cur=(await tx.get(lr)).data().lines; const bd=(await tx.get(br)).data(), files=[...bd.files];
+    let cur=(await tx.get(lr)).data().lines; const bd=(await tx.get(br)).data(), files=bd.files.map(f=>ren.get(f)||f);
+    if(ren.size)cur=cur.map(l=>ren.has(l.box)?{...l,box:ren.get(l.box)}:l);
     for(const x of plan){
       const nById=new Map(x.p.lines.map(l=>[l.id,l])), keep=new Set(x.goneKeep.map(l=>l.id));
       cur=cur.filter(l=>{if(l.box!==x.p.grp||nById.has(l.id)||keep.has(l.id))return true;del++;delIds.push(l.id);return false});
@@ -899,7 +905,7 @@ async function dropIndex(ids){   // 移除的行：出庫索引裡屬於這批�
 function renderFiles(){
   if(!S||!$('#fileList'))return;
   $('#fileList').innerHTML=S.files.map((f,i)=>{const ls=S.lines.filter(l=>l.box===f),q=ls.reduce((a,l)=>a+l.qty,0),d=ls.reduce((a,l)=>a+Math.min(l.qty,S.rcv[l.id]||0),0);
-    return `<div class="it" style="align-items:center"><div class="tx">📄 <b>${esc(f)}</b> <span class="muted">${ls.length} 行・已配 ${d}/${q}</span></div>${S.files.length>1?`<button class="btn gray" onclick="delFile(${i})">移除</button>`:''}</div>`}).join('');
+    return `<div class="it" style="align-items:center"><div class="tx">📄 <b>${esc(f)}</b>${boxNote(f)?` <span class="badge" style="background:#2563eb">${esc(boxNote(f))}</span>`:''} <span class="muted">${ls.length} 行・已配 ${d}/${q}</span></div>${S.files.length>1?`<button class="btn gray" onclick="delFile(${i})">移除</button>`:''}</div>`}).join('');
 }
 async function delFile(i){
   const f=S.files[i], ls=S.lines.filter(l=>l.box===f), d=ls.reduce((a,l)=>a+Math.min(l.qty,S.rcv[l.id]||0),0);
