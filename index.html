@@ -634,6 +634,7 @@ async function driveFiles(){
   for(const s of subs) (await listFolder(s.id)).filter(isSheet).forEach(f=>files.push({...f,sub:s.name}));
   files.forEach(f=>f.boxes=boxesIn(f.name));
   files.archive=(subs.find(f=>f.name===dCfg().archive)||{}).id||null;
+  files.at=Date.now();
   return BX.files=files;
 }
 // 建好批次後把入庫單搬進「俬儲已下載」；失敗不影響批次，只提示
@@ -644,7 +645,16 @@ async function archiveDriveFiles(files){
   if(!dest) return `\n⚠️ Drive 裡找不到「${cfg.archive}」資料夾，入庫單沒有搬移`;
   const bad=[];
   for(const f of todo){
-    try{await gd(`files/${f.id}?addParents=${dest}&removeParents=${cfg.folder}&supportsAllDrives=true&fields=id`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:'{}'});f.sub=cfg.archive}
+    try{
+      // 先問 Drive：檔案實際在哪些資料夾、這個帳號能不能把它移出原資料夾
+      // （"Increasing the number of parents is not allowed" ＝ 移出原資料夾那一半沒生效，只剩「加進新資料夾」）
+      const m=await (await gd(`files/${f.id}?supportsAllDrives=true&fields=parents,ownedByMe,owners(emailAddress),capabilities(canMoveItemWithinDrive,canRemoveMyDriveParent,canAddMyDriveParent)`)).json();
+      const cap=m.capabilities||{}, ps=(m.parents||[]).filter(x=>x!==dest);
+      if(!ps.length){f.sub=cfg.archive;continue}   // 已經在目的資料夾
+      if(cap.canMoveItemWithinDrive===false||cap.canRemoveMyDriveParent===false){
+        const ow=((m.owners||[])[0]||{}).emailAddress||'檔案擁有者';
+        bad.push(`${f.name}（Drive 不讓這個帳號搬：檔案擁有者是 ${ow}，你不是擁有者）`);continue}
+      await gd(`files/${f.id}?addParents=${dest}&removeParents=${ps.join(',')}&supportsAllDrives=true&fields=id`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:'{}'});f.sub=cfg.archive}
     catch(e){bad.push(`${f.name}（${e.message}）`)}
   }
   return bad.length?`\n⚠️ 下面這些沒搬成功，請到 Drive 手動搬到「${cfg.archive}」：\n`+bad.join('\n'):`\n📁 ${todo.length} 張入庫單已搬到「${cfg.archive}」`;
@@ -667,20 +677,23 @@ function boxDist(box,t){
     for(let j=1;j<=t.length;j++)cur[j]=Math.min(prev[j]+1,cur[j-1]+1,prev[j-1]+(box[i-1]===t[j-1]?0:1));prev=cur}
   return Math.min(...prev);
 }
+// 箱號的「形狀」：字母→A、數字→9（0M5FV390 → 9A9AA999）。宅配單號、OCR 雜訊形狀通常對不上
+function boxShape(b){return String(b).replace(/[A-Z]/g,'A').replace(/[0-9]/g,'9')}
 function matchBoxes(toks,files){
   const all=[...new Set(files.flatMap(f=>f.boxes))], canon=new Map(all.map(b=>[b,boxCanon(b)]));
+  const shapes=new Set(all.map(boxShape)), boxLike=b=>!shapes.size||shapes.has(boxShape(b));
   const hit=new Map(), miss=new Map();   // 箱號 → 來源
   const rank={bar:3,key:3,ocr:2,'key~':1,'ocr~':0};
   const put=(b,src)=>{if(!hit.has(b)||rank[src]>rank[hit.get(b)])hit.set(b,src)};
   for(const [t,src] of toks){
     const ct=boxCanon(t);
-    if(src==='bar'){if(all.includes(t))put(t,'bar');else miss.set(t,'bar');continue}   // 條碼讀到的一定準，不做模糊比對
+    if(src==='bar'){if(all.includes(t))put(t,'bar');else if(boxLike(t))miss.set(t,'bar');continue}   // 箱子上其他條碼（宅配單號等）不回報   // 條碼讀到的一定準，不做模糊比對
     const ds=all.map(b=>[b,boxDist(canon.get(b),ct)]), best=Math.min(Infinity,...ds.map(x=>x[1]));
     const top=ds.filter(x=>x[1]===best);
     if(best===0){top.forEach(([b])=>put(b,src));continue}
     if(best===1&&top.length===1&&t.length<=10){put(top[0][0],src+'~');continue}   // 只差一個字、而且只有一個候選
     const fix=t.replace(/^[OQD]/,'0');
-    if(src==='key'||(t.length===8&&new RegExp(`^${BOX}$`).test(fix))) miss.set(src==='key'?t:fix,src);
+    if(src==='key'||(t.length===8&&new RegExp(`^${BOX}$`).test(fix)&&boxLike(fix))) miss.set(src==='key'?t:fix,src);
   }
   for(const b of hit.keys()) miss.delete(b);
   return {hit,miss};
@@ -702,9 +715,13 @@ async function bxMatch(me){
   $('#bxDrive').style.display='none';
   try{
     if(!me.files||!me.used){me.busy=true;if(!me.ocr)$('#bxMsg').textContent='到 Google Drive 找入庫單…';bxRender()}
-    const [files,used]=await Promise.all([driveFiles(),me.used||batchBoxMap()]);me.used=used;
+    let [files,used]=await Promise.all([driveFiles(),me.used||batchBoxMap()]);me.used=used;
     if(BX!==me)return;
-    const {hit,miss}=matchBoxes(me.toks,files);
+    let {hit,miss}=matchBoxes(me.toks,files);
+    if(miss.size&&Date.now()-(files.at||0)>15e3){   // 有找不到的、清單又是 15 秒前抓的：廠商可能剛上傳，重抓一次再比
+      if(!me.ocr)$('#bxMsg').textContent='重新到 Google Drive 找入庫單…';
+      BX.files=null;files=await driveFiles();if(BX!==me)return;({hit,miss}=matchBoxes(me.toks,files));
+    }
     const inThis=new Set(S&&me.mode==='add'?S.files.flatMap(boxesIn):[]);
     me.rows=[...hit].map(([b,src])=>({b,src,fs:files.filter(f=>f.boxes.includes(b)).sort((x,y)=>(x.sub?1:0)-(y.sub?1:0)||String(y.modifiedTime).localeCompare(String(x.modifiedTime)))}));
     me.miss=[...miss.keys()];
