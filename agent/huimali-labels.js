@@ -35,8 +35,8 @@ const BROWSERS = [
 
 const CSS = `@page{size:A4;margin:0}html,body{margin:0}
 #a{display:grid;grid-template-columns:repeat(3,70mm);grid-auto-rows:29.7mm}
-.lb{box-sizing:border-box;padding:2mm 4mm;display:flex;align-items:center;gap:3mm;overflow:hidden;font-family:Arial,"Microsoft JhengHei","Segoe UI Emoji",sans-serif;color:#000}
-.lb .i{font-size:20pt;font-weight:800;white-space:nowrap}.lb .n{font-size:15pt;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}`;
+.lb{box-sizing:border-box;padding:2mm 4mm;display:flex;flex-direction:column;justify-content:center;align-items:flex-start;gap:0;overflow:hidden;font-family:Arial,"Microsoft JhengHei","Segoe UI Emoji",sans-serif;color:#000}
+.lb .i{font-size:32pt;font-weight:800;line-height:1.05;white-space:nowrap}.lb .n{font-size:13pt;line-height:1.2;max-width:100%;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}`;
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 function cors(req, res) {
