@@ -82,8 +82,8 @@
   @media print{
     body.lbl header,body.lbl main,body.lbl .modal,body.lbl .toast,body.lbl #net,body.lbl #inapp,body.lbl #flash{display:none!important}
     body.lbl #lblArea{display:grid!important;grid-template-columns:repeat(3,70mm);grid-auto-rows:29.7mm}
-    .lb{box-sizing:border-box;padding:2mm 4mm;display:flex;align-items:center;gap:3mm;overflow:hidden;font-family:Arial,"Microsoft JhengHei",sans-serif;color:#000}
-    .lb .i{font-size:20pt;font-weight:800;white-space:nowrap} .lb .n{font-size:15pt;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+    .lb{box-sizing:border-box;padding:2mm 4mm;display:flex;flex-direction:column;justify-content:center;align-items:flex-start;gap:0;overflow:hidden;font-family:Arial,"Microsoft JhengHei",sans-serif;color:#000}
+    .lb .i{font-size:32pt;font-weight:800;line-height:1.05;white-space:nowrap} .lb .n{font-size:13pt;line-height:1.2;max-width:100%;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
     @page{size:A4;margin:0}
   }
   .zone{display:inline-block;background:rgba(0,0,0,.25);border-radius:8px;padding:2px 12px;font-size:22px;font-weight:800;margin-bottom:2px}
@@ -651,10 +651,11 @@ async function archiveDriveFiles(files){
       const m=await (await gd(`files/${f.id}?supportsAllDrives=true&fields=parents,ownedByMe,owners(emailAddress),capabilities(canMoveItemWithinDrive,canRemoveMyDriveParent,canAddMyDriveParent)`)).json();
       const cap=m.capabilities||{}, ps=(m.parents||[]).filter(x=>x!==dest);
       if(!ps.length){f.sub=cfg.archive;continue}   // 已經在目的資料夾
-      if(cap.canMoveItemWithinDrive===false||cap.canRemoveMyDriveParent===false){
-        const ow=((m.owners||[])[0]||{}).emailAddress||'檔案擁有者';
-        bad.push(`${f.name}（Drive 不讓這個帳號搬：檔案擁有者是 ${ow}，你不是擁有者）`);continue}
-      await gd(`files/${f.id}?addParents=${dest}&removeParents=${ps.join(',')}&supportsAllDrives=true&fields=id`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:'{}'});f.sub=cfg.archive}
+      try{await gd(`files/${f.id}?addParents=${dest}&removeParents=${ps.join(',')}&supportsAllDrives=true&fields=id`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:'{}'});f.sub=cfg.archive}
+      catch(e){   // 失敗時把診斷資訊一起顯示，方便查原因
+        const ow=((m.owners||[])[0]||{}).emailAddress||'?';
+        e.message+=`；擁有者 ${ow}${m.ownedByMe?'(自己)':''}、原資料夾 ${ps.join(',')}${ps.includes(cfg.folder)?'':'(不是設定的資料夾)'}、可移出 ${cap.canRemoveMyDriveParent}、可搬 ${cap.canMoveItemWithinDrive}`;throw e}
+    }
     catch(e){bad.push(`${f.name}（${e.message}）`)}
   }
   return bad.length?`\n⚠️ 下面這些沒搬成功，請到 Drive 手動搬到「${cfg.archive}」：\n`+bad.join('\n'):`\n📁 ${todo.length} 張入庫單已搬到「${cfg.archive}」`;
